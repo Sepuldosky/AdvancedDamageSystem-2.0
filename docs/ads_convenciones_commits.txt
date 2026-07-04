@@ -154,6 +154,5 @@ en cada commit, se recomienda el uso de herramientas integradas en VSCode:
 =====================================================
 Documentos complementarios:
   docs/ADS_2_0_Architecture_updated.md   → arquitectura autocontenida (§1-§18)
-  docs/ADS_Block4_Architecture.md        → Browser UI 2.0
-  docs/ADS_Block5_Architecture.md        → restructura del browser (tabs)
+  CLAUDE.md                              → guía operativa para asistencia con Claude Code
 =====================================================
