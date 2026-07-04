@@ -1,0 +1,87 @@
+ADVANCED DAMAGE SYSTEM 2.0 — ROADMAP (BRÚJULA)
+Hacia dónde vamos y en qué orden. Qué construir next.
+=====================================================
+Documento vivo. Fija el RUMBO (secuencia estable de lo que sigue).
+"Dónde estamos dentro de esto" lo dice docs/ads_estado.md (foto de HOY).
+Leer JUNTO con ads_estado.md al decidir el próximo bloque.
+=====================================================
+
+
+0. CÓMO SE USA
+----------------
+
+Este doc ORDENA lo que sigue; ads_estado.md dice en qué punto estamos. Ambos se leen
+juntos al planear el próximo bloque. Regla anti-deriva: el detalle de diseño vive en
+docs/ADS_2_0_Architecture_updated.md (§13 Fase 2 backlog es la fuente); acá NO se
+duplica ese detalle — solo el orden y el criterio de entrada de cada tramo.
+
+Metodología para ejecutar cada tramo: docs/ads_flujo_trabajo.txt (planificación densa
++ vertical slice + orden de parches).
+
+
+1. INMEDIATO — cerrar Fase 1 en juego
+---------------------------------------
+
+  [1] Verificación en juego de Block 7 (Weapon Penetration Modifier).
+      Confirmar con ads_debug 3 cuál path resuelve un NPC disparando ARC9
+      (path=stash del detour vs. path=inline_arc9). Código ya cubre ambos.
+      Criterio de cierre: traza real observada en consola del servidor.
+      Ref: arquitectura §18 (caso borde abierto).
+
+
+2. FASE 2 — secuencia sugerida
+--------------------------------
+
+El orden prioriza lo que desbloquea o valida decisiones tempranas, y lo barato antes
+que lo caro. No es rígido: si un tramo destapa una dependencia, reordenar y anotarlo.
+
+  [2] Front 4 — skip de ApplyDamageMultiplier para ARC9.
+      ARC9 EFT ya aplica sus BodyDamageMults antes de ScaleNPCDamage; ADS los duplica
+      (~50% menos daño a miembros). Extender el guard isARC9 para saltar
+      ApplyDamageMultiplier y calibrar supervivencia con los sliders de transfer/frac.
+      Entrada: verificar en juego el feel de miembros ajustando dichos sliders.
+
+  [3] Migrar MakeSlider del tab Limbs/WL a fila manual.
+      Único remanente de DNumSlider tras la sesión UI Cleanup. Mismo patrón
+      durRow/durEntry/durSlider ya usado en Armor tab, toolgun y Weapons tab.
+      Cambio client-only, barato, cierra deuda de UI.
+
+  [4] Probe de hitgroups por modelo (arquitectura §7).
+      Spawn temporal + GetHitBoxHitGroup por modelo no cacheado; cache en
+      data/ads/hitgroup_cache.json. Grisa zonas imposibles en la silueta. Runtime sin
+      impacto (el resolver lee trace.HitGroup en vivo).
+
+  [5] Templates con nombre (Block 6).
+      Bundle {armor_profile, limbs_template} guardado con nombre en
+      data/ads/ads_templates.json. UI en tab General: Save/Load/Delete Template.
+      Diseño a cerrar en sesión futura.
+
+  [6] Armadura de jugador.
+      Misma lógica que NPCs, perfil por playermodel. ply:SetArmor() siempre 0, todo en
+      NWvars propias (nunca ply:Armor() nativo). Backend nuevo + pestaña propia en ADS
+      Configuration. Cierra la regresión interina (jugadores sin armadura ADS).
+
+  [7] Perfiles condicionales runtime + escudos recargables.
+      Trigger de batería/escudo en NWvar propia que swapea el tuple activo; zona-escudo
+      que se resuelve antes de la placa física.
+
+  [8] Afinar el kernel de penetración.
+      Con datos del Excel de curvas EFT reales. Las 3 líneas del Paso 1 del resolver son
+      swappable sin tocar el resto (arquitectura §11).
+
+  [9] Call site TFA.
+      Hook TFA_Bullet_Penetrate / desvío de MainBullet.Callback. Misma lógica que ARC9.
+
+  [10] Penalización de movimiento para armaduras pesadas.
+       (uranium_matrix: -40% velocidad, etc.)
+
+  [11] Multi-zona intra-NPC en un tiro.
+       penleft transferido entre dos zonas del mismo NPC.
+
+
+=====================================================
+Documentos complementarios:
+  docs/ads_estado.md                     → foto de HOY (dónde estamos)
+  docs/ADS_2_0_Architecture_updated.md   → §13 (fuente del backlog), diseño detallado
+  docs/ads_flujo_trabajo.txt             → cómo ejecutar cada tramo
+=====================================================

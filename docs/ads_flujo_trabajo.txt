@@ -1,0 +1,149 @@
+ADVANCED DAMAGE SYSTEM 2.0 — FLUJO DE TRABAJO
+Cómo se planifican y aplican los cambios en este addon.
+=====================================================
+Documento vivo. Metodología portada de KONTROL y adaptada al stack GLua / Garry's Mod.
+Se carga como contexto al inicio de una sesión de diseño o de aplicación de parches.
+Mantenerlo corto y accionable es parte de su utilidad.
+=====================================================
+
+
+0. PROPÓSITO, AUDIENCIA Y ROLES
+---------------------------------
+
+Este doc cubre el flujo planificación -> ejecución. No es arquitectura (eso está en
+ADS_2_0_Architecture_updated.md) ni estado (eso está en ads_estado.md).
+
+División de roles:
+- Planificador (típicamente un modelo Opus, o el autor): lee estado + arquitectura,
+  decide QUÉ cambia, en qué orden, con qué validaciones. Diseña por bloques.
+- Ejecutor (Claude Code / Sonnet en VSCode): aplica los cambios al Lua / JSON / docs,
+  valida contra el código real, y actualiza el CHANGELOG al cerrar.
+- El autor (Matías) orquesta: aprueba el plan antes de ejecutar, y VERIFICA EN JUEGO.
+
+Regla base: no hay test runner. La "verificación" de código con superficie de runtime
+es CARGAR EL MAPA Y CONFIRMAR EN JUEGO (ads_debug 2/3), no asumir. Preferir confirmar
+el flujo real antes que darlo por hecho.
+
+
+1. ORDEN DE EJECUCIÓN DE PARCHES
+----------------------------------
+
+Todo trabajo de aplicación de cambios sigue este orden estricto. Sin él, es fácil, por
+ejemplo, marcar el CHANGELOG antes de verificar el estado real.
+
+  PASO 1 — VERIFICACIÓN DE CONTEXTO
+    Leer docs/CHANGELOG.md y docs/ads_estado.md. Identificar qué está [PENDIENTE].
+    Si un parche que se pretende aplicar ya figura [APLICADO]: DETENERSE y consultar
+    al autor — el plan está desactualizado o el CHANGELOG quedó mal.
+
+  PASO 2 — VERIFICACIÓN DE ESTADO REAL
+    No confiar en que el doc refleja el archivo. Leer el Lua / JSON destino y confirmar
+    que el cambio no está ya aplicado. Si el código ya lo tiene: DETENERSE y consultar.
+    (Precedente: §13 del doc de arquitectura decía "Block 7 pendiente de aplicar"
+    cuando el código YA estaba en el árbol — el doc mentía, el archivo mandaba.)
+
+  PASO 3 — APLICACIÓN DE CAMBIOS
+    Aplicar en el orden documentado en el plan. Si el parche toca código Y docs:
+    CÓDIGO PRIMERO, docs después (para que las referencias de los docs apunten a un
+    código ya consistente). Respetar los "Contratos que no debes romper" de CLAUDE.md.
+
+  PASO 4 — VERIFICACIÓN EN JUEGO
+    Cargar mapa, ads_debug 2 (o 3 para el pipeline ARC9 completo), disparar contra un
+    NPC blindado, leer la consola del servidor. Para la matemática pura del resolver,
+    el bloque de auto-test comentado al final de ads_armor.lua
+    (ads_armor_deterministic 1) con sus valores esperados.
+
+  PASO 5 — ACTUALIZAR CHANGELOG Y ESTADO
+    En CHANGELOG.md: [PENDIENTE] -> [APLICADO YYYY-MM-DD]. Nunca borrar ni renumerar.
+    En ads_estado.md: refrescar EN SITIO la foto de HOY (mover lo cerrado, actualizar
+    remanentes). Si un tramo del roadmap se completó, reflejarlo.
+
+
+2. PLANIFICACIÓN DENSA POR BLOQUES
+------------------------------------
+
+Aplica a diseños con decisiones interdependientes y cobertura amplia (un subsistema
+nuevo, un refactor mayor del pipeline de daño). NO aplica a parches puntuales, typos,
+ni exploración sin compromiso.
+
+Estructura:
+- El diseño se parte en BLOQUES acotados temáticamente (el proyecto ya los rotula
+  "Block 1", "Block 2" ... "Block 7"; ver §13 de la arquitectura).
+- Sección 0 del contexto de la sesión: reminders no-negociables (los "Contratos" de
+  CLAUDE.md, convenciones de commit, no escribir código sin pedirlo). Sección de
+  no-scope explícita.
+- Iteración por bloque: se propone el bloque N -> se valida contra el REPO real
+  (ver §4) -> se integran correcciones e invariantes nuevas -> se repite 1-3 ciclos
+  hasta converger.
+- Al cerrar un bloque, se documenta en el doc de arquitectura (una sección por bloque,
+  autocontenida: un implementador debe poder ejecutarla sin el historial del chat) y se
+  registra en el CHANGELOG.
+
+Punto de corte / compactación: NO se decide por turnos ni por % de contexto, sino por
+CAMBIO DE MODO TEMÁTICO. Pregunta antes de seguir: "¿el próximo bloque tiene afinidad
+con lo hecho, o cambia de modo?" (diseño de datos -> UI, decisiones -> spec de
+implementación, lo que abre el árbol de decisión -> lo que lo cierra). Si cambia de
+modo, ese es el corte. Razones secundarias para cortar: saturación auto-reportada, o
+3+ ciclos de validación sin converger (señal de bloque mal alcance-ado).
+
+
+3. SECUENCIACIÓN POR VERTICAL SLICE
+-------------------------------------
+
+Construir por SLICE vertical, no por capa horizontal. Una feature de ADS cruza varias
+capas; se construye la feature entera de punta a punta, no "todos los resolvers" y
+luego "todas las UIs".
+
+El slice típico de una feature de armadura/arma cruza:
+  ads_armor.lua (extractor/resolver, función pura)
+    -> call site en ads_core.lua (ScaleNPCDamage / detour ARC9)
+    -> persistencia JSON (SaveConfig / LoadArmorData) + saneamiento server-side
+    -> contrato de red (AddNetworkString en ads_core, net.Receive gated por IsAdmin)
+    -> UI en cl_ads_browser.lua (tab + editor)
+
+Ejemplos ya hechos en el árbol: §14-§18 del doc de arquitectura (cada uno es un slice
+vertical cerrado, no una capa). El roadmap (ads_roadmap.txt) manda QUÉ slice sigue;
+ads_estado.md dice dónde estamos dentro de él.
+
+Mock-first cuando el peer no existe: si un slice depende de una base de armas aún no
+soportada (p. ej. TFA), congelar primero el contrato (el tuple normalizado del
+extractor, §5) y construir contra él; el call site real de esa base aterriza después.
+
+
+4. QUÉ VALIDAR CONTRA EL REPO
+-------------------------------
+
+El ejecutor con acceso al código valida lo que el planificador no ve. Preguntas útiles:
+- ¿La NWvar / función que el diseño asume EXISTE, con la firma correcta?
+  (ADS_Armor_Dur_<hg>, ADS.GetZone, ADS.ResolveArmor, ADS.ExtractBulletData...)
+- ¿La matemática propuesta cuadra con el bloque de auto-test de ads_armor.lua?
+- ¿El contrato de red coincide (net string, dirección, payload, gate IsAdmin)?
+- ¿El cambio respeta los Contratos de CLAUDE.md? (ads_armor.lua puro; no inyectar
+  campos en dmginfo; sync de durabilidad en el mismo tick; ARC9 solo-lectura;
+  autoridad = ADS.ArmorProfiles[classname])
+- ¿Hay un edge case que el código YA maneja y el diseño está reinventando?
+
+Regla de deslinde: si la pregunta se responde leyendo solo el chat/diseño, es para el
+planificador. Si requiere ABRIR archivos del repo, es para el ejecutor.
+
+
+5. CUÁNDO NO USAR ESTE FLUJO / EVOLUCIÓN
+------------------------------------------
+
+No aplica a: typos, ajustes menores hechos directo en VSCode, exploración de hipótesis
+sin compromiso de implementación. El criterio: si el cambio toca código con superficie
+de runtime, o actualiza un doc publicado que afecta futuras sesiones, entra en el flujo.
+
+Si durante una planificación se detecta un hueco que este doc no cubre (un patrón que se
+repite y merece ser regla), anotarlo al cierre para incorporarlo aquí.
+
+
+=====================================================
+Documentos complementarios:
+  CLAUDE.md                              → contratos no-negociables + índice
+  docs/ads_estado.md                     → foto de HOY
+  docs/ads_roadmap.txt                   → rumbo / qué sigue
+  docs/CHANGELOG.md                      → historial de parches
+  docs/ADS_2_0_Architecture_updated.md   → arquitectura de referencia (§1-§18)
+  docs/ads_convenciones_commits.txt      → convenciones de git commits
+=====================================================

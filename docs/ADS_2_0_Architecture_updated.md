@@ -526,6 +526,8 @@ Los siguientes convars existían en ADS 1.x y **no existen en 2.0:**
 
 ### Estado de implementación
 
+> **Estado vigente → [`ads_estado.md`](ads_estado.md)** (foto de HOY, fuente viva). La tabla siguiente es el registro de cierre de diseño de cada bloque; para saber qué está aplicado/pendiente HOY, manda `ads_estado.md`.
+
 | Bloque | Contenido | Estado |
 |---|---|---|
 | **Block 1** | `ads_armor.lua`: tablas estáticas, convars, `ExtractBulletData`, `ResolveArmor` | ✅ Completo |

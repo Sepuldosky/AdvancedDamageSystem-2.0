@@ -8,6 +8,17 @@ Sistema de blindaje **zonal** estilo Escape from Tarkov para NPCs y jugadores. R
 
 **Regla cardinal:** la armadura ADS 2.0 es un **pre-filtro** que se sienta delante de `ads_limbs`. El pool de HP de extremidades NO se modifica para compensar el blindaje. La bala impacta → el resolver calcula penetración/daño a carne/pérdida de energía → el resultado entra a `ads_limbs`/HP nativo como lo haría el daño crudo.
 
+## Docs del proyecto — jerarquía de lectura
+
+Antes de tocar código, lee en este orden (los tres primeros son **docs vivos**):
+
+1. **Estado de HOY** → [`docs/ads_estado.md`](docs/ads_estado.md). Foto del AHORA, ≤1 pantalla. **Léelo ANTES** que la arquitectura — dice qué existe hoy, qué está pendiente de verificar y qué deuda hay.
+2. **Rumbo** → [`docs/ads_roadmap.txt`](docs/ads_roadmap.txt). Qué sigue y en qué orden. `estado` dice dónde estamos dentro de él.
+3. **Historial de parches** → [`docs/CHANGELOG.md`](docs/CHANGELOG.md). `[PENDIENTE]`/`[APLICADO YYYY-MM-DD]`, nunca se borra ni renumera.
+4. **Metodología de trabajo** → [`docs/ads_flujo_trabajo.txt`](docs/ads_flujo_trabajo.txt). Planificación densa por bloques, vertical slice, orden de ejecución de parches.
+5. **Arquitectura de referencia** (autocontenida, §1-§18) → [`docs/ADS_2_0_Architecture_updated.md`](docs/ADS_2_0_Architecture_updated.md). Diseño estable; se consulta por sección cuando se necesita.
+6. **Convenciones de commit** → [`docs/ads_convenciones_commits.txt`](docs/ads_convenciones_commits.txt).
+
 ## Idioma
 
 Comentarios y mensajes de commit en **español**; los `<tipo>` de commit van en inglés (ver convenciones). El código existente mezcla comentarios en español e inglés — **iguala el estilo del archivo que estás editando**, no impongas uno nuevo.
@@ -94,3 +105,5 @@ No hay test runner automatizado (es un addon GMod). Para validar cambios:
 - Matemática del resolver → bloque de auto-test comentado en `ads_armor.lua`.
 - Comportamiento en juego → cargar mapa, `ads_debug 2`, disparar contra NPC blindado y leer la consola del servidor.
 - Al editar código con superficie de runtime, prefiere confirmar el flujo real en juego antes que asumir.
+
+Al cerrar un cambio con superficie de runtime: refresca [`docs/ads_estado.md`](docs/ads_estado.md) en sitio y actualiza [`docs/CHANGELOG.md`](docs/CHANGELOG.md) (`[PENDIENTE]` → `[APLICADO YYYY-MM-DD]`, sin borrar ni renumerar). El orden completo de ejecución de parches está en [`docs/ads_flujo_trabajo.txt`](docs/ads_flujo_trabajo.txt) §1.
