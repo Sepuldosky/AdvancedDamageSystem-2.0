@@ -1,0 +1,16 @@
+# Config generado en runtime (se recrea desde cero, no se versiona)
+data/
+garrysmod/data/
+
+# Assets compilados / caches de GMod
+*.gma
+*.cache
+*.bsp
+
+# Editor / OS
+.vscode/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store

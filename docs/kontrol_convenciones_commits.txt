@@ -1,0 +1,135 @@
+KONTROL — CONVENCIONES DE GIT COMMITS
+Guía de estandarización para el historial de cambios del repositorio
+=====================================================
+Documento vivo — actualizaciones según evolución del flujo.
+=====================================================
+
+
+0. PROPÓSITO Y AUDIENCIA
+--------------------------
+
+Este documento establece las reglas y la estructura obligatoria para la
+redacción de mensajes de commit en el repositorio de KONTROL. Su objetivo
+es mantener un historial limpio, legible y automatizable, facilitando el
+rastreo de cambios entre TypeScript, Prisma y la documentación.
+
+Aplica de forma estricta a todo commit confirmado en el repositorio,
+independientemente de quién o qué lo origine.
+
+
+1. ESTRUCTURA OBLIGATORIA DEL MENSAJE
+---------------------------------------
+
+Todo commit DEBE seguir el estándar de Conventional Commits adaptado al
+proyecto, utilizando el siguiente formato:
+
+  <tipo>(<alcance>): <descripción corta>
+
+Los tipos van en inglés (ver sección 2). La descripción y el cuerpo
+opcional del commit van en español.
+
+Reglas críticas de formato:
+- NUNCA empezar la descripción con mayúscula.
+- NUNCA incluir un punto (.) al final de la descripción.
+- Usar el tiempo presente imperativo (ej: "añade" en lugar de "añadido",
+  "aplica" en lugar de "aplicando").
+
+
+2. TIPOS DE COMMIT PERMITIDOS (<tipo>)
+----------------------------------------
+
+El tipo define la naturaleza del cambio introducido. Se prohíben términos
+genéricos como "cambios", "fix" a secas o "tarea". Los tipos válidos son:
+
+  feat:
+    Una nueva funcionalidad para el sistema (código TypeScript, endpoints,
+    lógica de negocio o nuevos modelos utilizables).
+
+  fix:
+    Corrección de un error o bug activo en el código o en el esquema.
+
+  docs:
+    Cambios exclusivos en archivos de documentación (archivos .txt, .md,
+    reglas de Claude o parches de arquitectura). No debe tocar código.
+
+  refactor:
+    Modificaciones en el código TypeScript que no añaden funcionalidades
+    ni corrigen errores (ej: optimización de funciones, limpieza).
+
+  chore:
+    Tareas de mantenimiento rutinario que no afectan el código de la app
+    ni la documentación (ej: actualizar package.json, configurar linters).
+
+  test:
+    Añadir, modificar o corregir pruebas automatizadas.
+
+
+3. ALCANCES ESPECÍFICOS DEL PROYECTO (<alcance>)
+--------------------------------------------------
+
+El alcance identifica el módulo o área afectada por el cambio. Debe ir
+siempre entre paréntesis. Para KONTROL, los alcances definidos son:
+
+  db / prisma:
+    Cambios exclusivos en el archivo schema.prisma, siembras (seeds) o
+    scripts de migración generados.
+
+  auth:
+    Lógica de autenticación, autorización, roles y permisos.
+
+  admin:
+    Todo lo relacionado con el panel de superadmin, logs de acciones
+    internas e impersonación.
+
+  fuel-manager:
+    Módulo de control de combustible: dispensaciones, stock, tránsitos
+    y alertas asociadas.
+
+  gps:
+    Módulo de hardware, conectividad de dispositivos de rastreo y
+    telemetría (FMC003, FMC650).
+
+  webhook:
+    Lógica de integración de webhooks, contratos de eventos y validaciones.
+
+  core:
+    Configuraciones globales del proyecto (TypeScript, Express, Express Router,
+    arquitectura base).
+
+
+4. EJEMPLOS PRÁCTICOS DE APLICACIÓN
+-------------------------------------
+
+  4.1 Base de Datos y Prisma:
+    - feat(db): añade modelo BeelinkInventory y migraciones asociadas
+    - feat(prisma): aplica parches de webhook_contract_v1 en el esquema
+    - chore(db): inicializa setup de prisma en packages/db
+
+  4.2 Documentación y Reglas:
+    - docs(admin): actualiza reglas de Claude y flujo de parches
+    - docs(core): añade arquitectura open_remote y archivos de operaciones
+
+  4.3 TypeScript y Lógica de Negocio:
+    - feat(admin): implementa panel de control para superadmin
+    - fix(webhook): corrige validación de firma en el contrato v1
+    - feat(fuel-manager): añade endpoint de cierre manual de tránsito
+    - fix(auth): corrige expiración de token en flujo de 2FA
+
+
+5. AUTOMATIZACIÓN EN VSCODE
+-----------------------------
+
+Para garantizar que el flujo sea ágil y no requiera construcción manual
+en cada commit, se recomienda el uso de herramientas integradas en VSCode:
+
+  Extensión Conventional Commits:
+    Instalar la extensión "Conventional Commits" de Vivian De Smedt. Ofrece
+    un menú desplegable interactivo en la barra de Git para estructurar el
+    tipo, alcance y descripción de forma automática.
+
+=====================================================
+Documentos complementarios:
+  docs/CHANGELOG.md                 → historial y control de parches
+  kontrol_workflow_parches.txt      → flujo de planificación de parches
+  kontrol_desarrollo.txt            → testing, Git workflow y CI/CD
+=====================================================

@@ -1,0 +1,2137 @@
+-- Advanced Damage System - NPC Browser (client)
+if SERVER then return end
+
+local DBG    = CreateClientConVar("ads_browser_debug",     "0",    true, false, "Enable debug prints for the ADS NPC Browser")
+local CV_X   = CreateClientConVar("ads_browser_x",         "-1",   true, false)
+local CV_Y   = CreateClientConVar("ads_browser_y",         "-1",   true, false)
+local CV_W   = CreateClientConVar("ads_browser_w",         "900",  true, false)
+local CV_H   = CreateClientConVar("ads_browser_h",         "600",  true, false)
+local CV_DIV = CreateClientConVar("ads_browser_div_ratio", "0.70", true, false)
+
+local function dprint(...)
+    if DBG:GetBool() then print("[ADS_Browser]", ...) end
+end
+
+local function ResolveCategory(raw)
+    if type(raw) ~= "string" or raw == "" then return "Other" end
+    local phrase = language.GetPhrase(raw)
+    if type(phrase) ~= "string" or phrase == "" then return raw end
+    return phrase
+end
+
+ADS_Browser = ADS_Browser or {}
+ADS_Browser.Frame = nil
+ADS_Browser.Catalog = {}        -- { [classname] = {class, name, category, model} }
+ADS_Browser.State = {}          -- { [classname] = "wl_user"|"bl_user"|... }
+ADS_Browser.CollapsedCats = {}  -- { [catname] = true/false }
+ADS_Browser.Selected = {}       -- { [classname] = true }
+ADS_Browser.LastClicked = nil   -- para shift-click range
+ADS_Browser.Categories = {}     -- { [catname] = DCollapsibleCategory }
+ADS_Browser.OrderedRows = {}    -- array de {class, row} en orden de pantalla, para shift-click
+ADS_Browser.Filter = {
+    search = "",
+    category = "All",
+    states = {
+        wl_user = true, wl_hard = true,
+        bl_user = true, bl_hard = true,
+        vj_pattern = true, vj_auto = true,
+        unknown = true, none = true,
+    },
+}
+ADS_Browser.Template = {
+    head_hp_frac              = 0.30,
+    arms_hp_frac              = 0.20,
+    legs_hp_frac              = 0.20,
+    limb_damage_transfer_head = 1.50,
+    limb_damage_transfer_arms = 0.80,
+    limb_damage_transfer_legs = 0.60,
+    mult_head = 1.0, mult_chest = 1.0, mult_arm = 1.0, mult_leg = 1.0,
+}
+ADS_Browser.RightPanel = nil
+ADS_Browser.CopyButton = nil
+ADS_Browser._debugged = {}   -- throttle para prints de PaintOver
+ADS_Browser.Armored = {}     -- { [classname] = bool } — tiene perfil de armadura
+ADS_Browser.ArmorEditor = {  -- template de armadura (ya no es por-NPC, es global)
+    classname = nil,          -- sin uso funcional; se mantiene por compat
+    profile   = {},
+    dirty     = false,
+}
+ADS_Browser.ArmorEditorRefresh = nil  -- función para actualizar controles del editor
+ADS_Browser.ArmorSourceLabel   = nil  -- DLabel "Copied from: X" en tab Armor
+ADS_Browser.WLSliders = {}  -- refs a sliders del tab WL para refresh in-place
+ADS_Browser._lastClickTime     = 0    -- detección de doble-click por timing
+ADS_Browser._lastClickClass    = nil
+
+local STATUS_LABEL = {
+    wl_user    = "WL",
+    wl_hard    = "WL-H",
+    bl_user    = "BL",
+    bl_hard    = "BL-H",
+    vj_pattern = "VJ",
+    vj_auto    = "VJ",
+    unknown    = "?",
+    none       = "-",
+}
+
+local STATUS_COLOR = {
+    wl_user    = Color(120, 200, 120),
+    wl_hard    = Color( 90, 160,  90),
+    bl_user    = Color(210,  90,  90),
+    bl_hard    = Color(160,  60,  60),
+    vj_pattern = Color(220, 200,  80),
+    vj_auto    = Color(220, 200,  80),
+    unknown    = Color(160, 160, 160),
+    none       = Color(110, 110, 110),
+}
+
+local function ResolveIconPath(class, data)
+    -- 1. IconOverride explícito del registro
+    if data.IconOverride and data.IconOverride ~= "" then
+        return data.IconOverride
+    end
+    -- 2. Buscar en disco las convenciones conocidas.
+    -- Prioridad: .vmt (material Source nativo) > .png (convención moderna).
+    -- El path devuelto va SIN extensión para .vmt y CON extensión para .png.
+    local bases = {
+        "vgui/entities/" .. class, -- Sentry's y packs que heredan su estructura
+        "entities/" .. class,      -- HL Resurgence y otros VJ clásicos
+    }
+    for _, base in ipairs(bases) do
+        if file.Exists("materials/" .. base .. ".vmt", "GAME") then
+            return base -- sin extensión, Source resuelve el .vmt
+        end
+        if file.Exists("materials/" .. base .. ".png", "GAME") then
+            return base .. ".png"
+        end
+    end
+    return nil
+end
+
+local function BuildCatalog()
+    local cat = {}
+
+    -- Fuente A: list.Get("NPC") - Sandbox + lo que VJ registre aqu�
+    local npcs = list.Get("NPC") or {}
+    for class, data in pairs(npcs) do
+        if type(data) == "table" then
+            cat[class] = {
+                class    = class,
+                name     = data.Name     or class,
+                category = ResolveCategory(data.Category) or "Other",
+                model    = data.Model    or nil,
+                icon_path  = ResolveIconPath(class, data),
+            }
+        end
+    end
+
+    -- Fuente C: registro interno de VJ Base si est� presente.
+    -- VJ expone VJ.AddNPC que rellena list.Get("NPC") en la mayor�a de addons,
+    -- pero algunos viejos usan tablas propias. Defensivo: si existe VJ.NPC_Spawner_Addons
+    -- o similar, lo recorremos sin romper si no est�.
+    if istable(VJ) and istable(VJ.NPC_Spawner_Addons) then
+        for _, entry in pairs(VJ.NPC_Spawner_Addons) do
+            if istable(entry) and entry.Class and not cat[entry.Class] then
+                cat[entry.Class] = {
+                    class    = entry.Class,
+                    name     = entry.Name     or entry.Class,
+                    category = ResolveCategory(entry.Category) or "VJ Base",
+                    model    = entry.Model    or nil,
+                    icon_path  = ResolveIconPath(class, data),
+                }
+            end
+        end
+    end
+
+    return cat
+end
+
+-- Agrupa el cat�logo por categor�a y ordena alfab�ticamente dentro de cada una
+local function GroupByCategory(catalog)
+    local groups = {}
+    for class, data in pairs(catalog) do
+        local c = data.category or "Other"
+        groups[c] = groups[c] or {}
+        table.insert(groups[c], data)
+    end
+    for _, list in pairs(groups) do
+        table.sort(list, function(a, b) return (a.name or "") < (b.name or "") end)
+    end
+    -- Ordenar tambi�n los nombres de categor�a
+    local catNames = {}
+    for c, _ in pairs(groups) do table.insert(catNames, c) end
+    table.sort(catNames)
+    return groups, catNames
+end
+
+local function RowMatchesFilter(class, data, status)
+    local f = ADS_Browser.Filter
+    if f.category ~= "All" and data.category ~= f.category then
+        return false
+    end
+    if not f.states[status] then return false end
+    if f.search ~= "" then
+        local q = string.lower(f.search)
+        local n = string.lower(data.name or "")
+        local c = string.lower(class)
+        if not string.find(n, q, 1, true) and not string.find(c, q, 1, true) then
+            return false
+        end
+    end
+    return true
+end
+
+local function ApplyFilter()
+    if not IsValid(ADS_Browser.Scroll) then return end
+    local catVisibleCount = {}
+    for class, row in pairs(ADS_Browser.Rows or {}) do
+        if IsValid(row) then
+            local data = ADS_Browser.Catalog[class]
+            local status = ADS_Browser.State[class] or "none"
+            local visible = RowMatchesFilter(class, data, status)
+            row:SetVisible(visible)
+            if visible then
+                local cat = data.category
+                catVisibleCount[cat] = (catVisibleCount[cat] or 0) + 1
+            end
+        end
+    end
+    for cat, dcat in pairs(ADS_Browser.Categories or {}) do
+        if IsValid(dcat) then
+            local visible = (catVisibleCount[cat] or 0) > 0
+            dcat:SetVisible(visible)
+            if visible and dcat:GetExpanded() then
+                dcat:InvalidateLayout(true)
+            end
+        end
+    end
+    ADS_Browser.Scroll:InvalidateLayout(true)
+    local canvas = ADS_Browser.Scroll:GetCanvas()
+    if IsValid(canvas) then canvas:InvalidateLayout(true) end
+end
+
+-- Construye una fila custom para un NPC
+local function BuildRow(parent, data, status)
+    local row = vgui.Create("DPanel", parent)
+    row:SetTall(26)
+    row:Dock(TOP)
+    row:DockMargin(0, 0, 0, 1)
+    row.data = data
+    row.status = status
+
+    -- Fondo + placeholder gris del icono (resalta azul si está seleccionado)
+    row.Paint = function(self, w, h)
+        if ADS_Browser.Selected[self.data.class] then
+            surface.SetDrawColor(70, 110, 160, 255)
+        else
+            surface.SetDrawColor(35, 35, 35, 255)
+        end
+        surface.DrawRect(0, 0, w, h)
+        if not self.hasIcon then
+            surface.SetDrawColor(70, 70, 70, 255)
+            surface.DrawRect(4, 3, 20, 20)
+        end
+    end
+
+    -- Selección: click simple, ctrl+click toggle, shift+click rango
+    row.OnMousePressed = function(self, code)
+        if code ~= MOUSE_LEFT then return end
+        local class = self.data.class
+        local ctrl  = input.IsKeyDown(KEY_LCONTROL) or input.IsKeyDown(KEY_RCONTROL)
+        local shift = input.IsKeyDown(KEY_LSHIFT)   or input.IsKeyDown(KEY_RSHIFT)
+
+        -- Doble-click: dos clicks al mismo NPC en < 0.35s → Copy Selected
+        local now = SysTime()
+        local isDouble = (class == ADS_Browser._lastClickClass)
+                         and (now - ADS_Browser._lastClickTime < 0.35)
+        ADS_Browser._lastClickTime  = now
+        ADS_Browser._lastClickClass = class
+        if isDouble and not ctrl and not shift then
+            ADS_Browser.CopyFromClass(class)
+            return
+        end
+
+        if shift and ADS_Browser.LastClicked then
+            local inRange = false
+            local a, b = ADS_Browser.LastClicked, class
+            for _, entry in ipairs(ADS_Browser.OrderedRows) do
+                if IsValid(entry.row) and entry.row:IsVisible() then
+                    if entry.class == a or entry.class == b then
+                        ADS_Browser.Selected[entry.class] = true
+                        if a == b then break end
+                        inRange = not inRange
+                        if not inRange then break end
+                    elseif inRange then
+                        ADS_Browser.Selected[entry.class] = true
+                    end
+                end
+            end
+        elseif ctrl then
+            ADS_Browser.Selected[class] = not ADS_Browser.Selected[class] or nil
+            ADS_Browser.LastClicked = class
+        else
+            ADS_Browser.Selected = {}
+            ADS_Browser.Selected[class] = true
+            ADS_Browser.LastClicked = class
+        end
+        ADS_Browser.UpdateSelectionCount()
+    end
+
+    -- Texto pintado por encima del ícono hijo
+    row.PaintOver = function(self, w, h)
+        if DBG:GetBool() and not ADS_Browser._debugged[self.data.class] then
+            ADS_Browser._debugged[self.data.class] = true
+            if self.status == "wl_user" then
+                local wl = ADS_Browser.Whitelist and ADS_Browser.Whitelist[self.data.class]
+                dprint("paint wl_user", self.data.class,
+                    "| Whitelist=", ADS_Browser.Whitelist and "set" or "nil",
+                    "| entry=", tostring(wl))
+            end
+        end
+        surface.SetFont("DermaDefault")
+        surface.SetTextColor(220, 220, 220)
+        surface.SetTextPos(32, 6)
+        surface.DrawText(string.sub(self.data.name or "?", 1, 26))
+
+        surface.SetTextColor(170, 170, 170)
+        surface.SetTextPos(210, 6)
+        surface.DrawText(string.sub(self.data.class or "?", 1, 24))
+
+        local col = STATUS_COLOR[self.status] or STATUS_COLOR.none
+        local lbl = STATUS_LABEL[self.status] or "-"
+        surface.SetFont("DermaDefaultBold")
+        surface.SetTextColor(col.r, col.g, col.b, 255)
+        surface.SetTextPos(390, 6)
+        surface.DrawText(lbl)
+
+        -- Indicador de perfil de armadura (columna Arm)
+        if ADS_Browser.Armored[self.data.class] then
+            surface.SetFont("DermaDefaultBold")
+            surface.SetTextColor(100, 180, 255, 255)
+            surface.SetTextPos(425, 6)
+            surface.DrawText("[ARM]")
+        end
+
+        -- Multiplicadores de zona (columna H/C/A/L), solo si es wl_user
+        -- Muestra 1.0 por defecto cuando no hay override guardado (dmg_mult no persiste si todo es 1.0)
+        if self.status == "wl_user" then
+            local wl = ADS_Browser.Whitelist and ADS_Browser.Whitelist[self.data.class]
+            local m  = (type(wl) == "table" and type(wl.dmg_mult) == "table") and wl.dmg_mult or {}
+            local txt = string.format("%.1f/%.1f/%.1f/%.1f",
+                m.head or 1.0, m.chest or 1.0, m.arm or 1.0, m.leg or 1.0)
+            surface.SetFont("DermaDefault")
+            surface.SetTextColor(200, 200, 200, 255)
+            surface.SetTextPos(465, 6)
+            surface.DrawText(txt)
+        end
+    end
+
+    -- Icono: icon_path (IconOverride o convención VJ) > SpawnIcon del modelo > placeholder
+    if data.icon_path then
+        local img = vgui.Create("DImage", row)
+        img:SetPos(4, 3)
+        img:SetSize(20, 20)
+        img:SetImage(data.icon_path)
+        img:SetMouseInputEnabled(false)
+        row.hasIcon = true
+    elseif data.model and data.model ~= "" then
+        local icon = vgui.Create("SpawnIcon", row)
+        icon:SetPos(4, 3)
+        icon:SetSize(20, 20)
+        icon:SetModel(data.model)
+        icon:SetMouseInputEnabled(false)
+        icon.DoClick = function() end
+        icon.OpenMenu = function() end
+        row.hasIcon = true
+    end
+
+    return row
+end
+
+
+-- Renderiza el acorde�n completo dentro de un scroll
+local function RenderCatalog(scroll)
+    -- Si ya están construidas las filas, solo actualiza estados
+    if ADS_Browser.RowsBuilt then
+        for class, row in pairs(ADS_Browser.Rows or {}) do
+            if IsValid(row) then
+                row.status = ADS_Browser.State[class] or "none"
+            end
+        end
+        scroll:InvalidateLayout(true)
+        return
+    end
+
+    scroll:Clear()
+    ADS_Browser.Rows = {}
+    ADS_Browser.Categories = {}
+    ADS_Browser.OrderedRows = {}
+
+    local groups, catNames = GroupByCategory(ADS_Browser.Catalog)
+
+    for _, catName in ipairs(catNames) do
+        local dcat = vgui.Create("DCollapsibleCategory", scroll)
+        dcat:Dock(TOP)
+        dcat:DockMargin(0, 0, 0, 2)
+        dcat:SetLabel(catName .. "  (" .. #groups[catName] .. ")")
+        dcat:SetExpanded(not ADS_Browser.CollapsedCats[catName])
+        ADS_Browser.Categories[catName] = dcat
+
+        local body = vgui.Create("DPanel", dcat)
+        body:Dock(TOP)
+        body.Paint = function() end
+        dcat:SetContents(body)
+
+        for _, data in ipairs(groups[catName]) do
+            local status = ADS_Browser.State[data.class] or "none"
+            local row = BuildRow(body, data, status)
+            ADS_Browser.Rows[data.class] = row
+            table.insert(ADS_Browser.OrderedRows, {class = data.class, row = row})
+        end
+
+        dcat.OnToggle = function(self, expanded)
+            ADS_Browser.CollapsedCats[catName] = not expanded
+        end
+    end
+
+    ADS_Browser.RowsBuilt = true
+end
+
+-- Net: recibir estados del server y re-renderizar
+net.Receive("ads_catalog_state", function()
+    local count = net.ReadUInt(16)
+    local order = ADS_Browser._stateOrder or {}
+    for i = 1, count do
+        local status  = net.ReadString()
+        local armored = net.ReadBool()
+        local class   = order[i]
+        if class then
+            ADS_Browser.State[class]   = status
+            ADS_Browser.Armored[class] = armored
+        end
+    end
+    dprint("catalog_state received | count=", count)
+    if IsValid(ADS_Browser.Frame) and IsValid(ADS_Browser.Scroll) then
+        RenderCatalog(ADS_Browser.Scroll)
+    end
+end)
+
+-- Recibe perfil de armadura de una clase desde el server (respuesta a request o ACK de save)
+net.Receive("ads_armor_data", function()
+    local classname = net.ReadString()
+    local profile   = net.ReadTable() or {}
+    dprint("ads_armor_data received | class=", classname, "| zones=",
+        profile.zones and table.Count(profile.zones) or 0)
+    ADS_Browser.ArmorEditor.classname = classname
+    ADS_Browser.ArmorEditor.profile   = profile
+    ADS_Browser.ArmorEditor.dirty     = false
+    if ADS_Browser.ArmorEditorRefresh then
+        ADS_Browser.ArmorEditorRefresh()
+    end
+end)
+
+-- Escucha el hook que el stool dispara al recibir ads_send_lists.
+-- Usar hook en lugar de un segundo net.Receive evita que ambos se pisen.
+hook.Add("ADS_ListsUpdated", "ADS_Browser_SyncLists", function()
+    local t = ADS and ADS.ClientLists or {}
+    ADS_Browser.Whitelist = t.whitelist or {}
+    ADS_Browser.Blacklist = t.blacklist or {}
+    dprint("ADS_ListsUpdated | wl=", table.Count(ADS_Browser.Whitelist),
+        "| bl=", table.Count(ADS_Browser.Blacklist))
+    if IsValid(ADS_Browser.Frame) then
+        ADS_Browser.RequestState()
+        if IsValid(ADS_Browser.Scroll) then
+            ADS_Browser.Scroll:InvalidateLayout(true)
+        end
+    end
+end)
+
+function ADS_Browser.RequestState()
+    local classnames = {}
+    for class, _ in pairs(ADS_Browser.Catalog) do
+        table.insert(classnames, class)
+    end
+    ADS_Browser._stateOrder = classnames  -- orden para zippear la respuesta
+    net.Start("ads_request_catalog_state")
+    net.WriteTable(classnames)
+    net.SendToServer()
+end
+
+-- Constantes locales del editor de armadura
+local ZONE_LIST = {
+    { hg = 1, label = "HEAD"      },
+    { hg = 2, label = "CHEST"     },
+    { hg = 3, label = "STOMACH"   },
+    { hg = 4, label = "LEFT ARM"  },
+    { hg = 5, label = "RIGHT ARM" },
+    { hg = 6, label = "LEFT LEG"  },
+    { hg = 7, label = "RIGHT LEG" },
+}
+
+local MAT_ABBR = {
+    aramid             = "AR",
+    titanium           = "TI",
+    ceramic            = "CE",
+    poly_ceramic       = "PC",
+    nano_titanium      = "NT",
+    electrified_aramid = "EA",
+    m_stf              = "MS",
+    uranium_matrix     = "UM",
+}
+
+local ZONE_DEFAULTS = { class = 3, dur_max = 80, material = "aramid" }
+local MAT_LIST = {
+    "aramid", "titanium", "ceramic", "poly_ceramic",
+    "nano_titanium", "electrified_aramid", "m_stf", "uranium_matrix",
+}
+local MAT_DISPLAY = {
+    aramid             = "Aramid",
+    titanium           = "Titanium",
+    ceramic            = "Ceramic",
+    poly_ceramic       = "Poly Ceramic",
+    nano_titanium      = "Nano Titanium",
+    electrified_aramid = "Electrified Aramid",
+    m_stf              = "M-STF Fluid",
+    uranium_matrix     = "Uranium Matrix",
+}
+
+-- Forward declaration: BuildWLTab referencia BuildRightPanel (Copy/Reset) antes de
+-- su definición léxica. Sin esto el nombre bindea a global nil y crashea al usarse.
+local BuildRightPanel
+
+-- Copia armor (async) + limbs (sync desde cache WL) de una clase al template.
+-- Doble-click en una fila llama a esta función. También la usa el botón Copy Selected.
+function ADS_Browser.CopyFromClass(classname)
+    if not classname or classname == "" then return end
+
+    -- Limbs: copiar del cache de whitelist si existe
+    local wl = ADS_Browser.Whitelist and ADS_Browser.Whitelist[classname]
+    if type(wl) == "table" then
+        local t = ADS_Browser.Template
+        if wl.head_hp_frac              then t.head_hp_frac              = wl.head_hp_frac              end
+        if wl.arms_hp_frac              then t.arms_hp_frac              = wl.arms_hp_frac              end
+        if wl.legs_hp_frac              then t.legs_hp_frac              = wl.legs_hp_frac              end
+        if wl.limb_damage_transfer_head then t.limb_damage_transfer_head = wl.limb_damage_transfer_head end
+        if wl.limb_damage_transfer_arms then t.limb_damage_transfer_arms = wl.limb_damage_transfer_arms end
+        if wl.limb_damage_transfer_legs then t.limb_damage_transfer_legs = wl.limb_damage_transfer_legs end
+        if type(wl.dmg_mult) == "table" then
+            t.mult_head  = wl.dmg_mult.head  or 1.0
+            t.mult_chest = wl.dmg_mult.chest or 1.0
+            t.mult_arm   = wl.dmg_mult.arm   or 1.0
+            t.mult_leg   = wl.dmg_mult.leg   or 1.0
+        end
+    end
+
+    -- Armor: async — ads_armor_data receive actualiza ArmorEditor.profile y refresca
+    net.Start("ads_request_armor")
+    net.WriteString(classname)
+    net.SendToServer()
+
+    -- Actualizar label de fuente si el panel está visible
+    if IsValid(ADS_Browser.ArmorSourceLabel) then
+        ADS_Browser.ArmorSourceLabel:SetText("Copied from: " .. classname)
+        ADS_Browser.ArmorSourceLabel:SetTextColor(Color(170, 210, 170))
+    end
+
+    -- Refrescar sliders WL in-place (sin reconstruir el panel ni destruir el sheet)
+    for key, slider in pairs(ADS_Browser.WLSliders) do
+        if IsValid(slider) then
+            slider:SetValue(ADS_Browser.Template[key])
+        end
+    end
+end
+
+local function BuildArmorTab(parent)
+    -- ── Source label (unchanged — CopyFromClass and Reset All write to this) ──
+    local srcLabel = vgui.Create("DLabel", parent)
+    srcLabel:Dock(TOP)
+    srcLabel:DockMargin(4, 6, 4, 0)
+    srcLabel:SetText("Armor Template  (use Copy Selected or double-click a NPC)")
+    srcLabel:SetFont("DermaDefault")
+    srcLabel:SetTextColor(Color(130, 130, 130))
+    ADS_Browser.ArmorSourceLabel = srcLabel
+
+    -- ── Local state ───────────────────────────────────────────────────────────
+    local refreshing   = false
+    local selectedZone = "2"   -- CHEST selected by default
+    local setEditor            -- forward declaration (used in silPanel before definition)
+
+    -- Zone rects in a 130×207 px panel (0.65 scale of the 200×320 prototype viewBox)
+    local ZONE_RECTS = {
+        ["1"] = { x = 51, y = 5,   w = 28, h = 35 },  -- HEAD
+        ["2"] = { x = 42, y = 48,  w = 46, h = 38 },  -- CHEST
+        ["3"] = { x = 44, y = 87,  w = 42, h = 27 },  -- STOMACH
+        ["4"] = { x = 26, y = 49,  w = 13, h = 66 },  -- LEFT ARM
+        ["5"] = { x = 91, y = 49,  w = 13, h = 66 },  -- RIGHT ARM
+        ["6"] = { x = 43, y = 116, w = 21, h = 86 },  -- LEFT LEG
+        ["7"] = { x = 66, y = 116, w = 21, h = 86 },  -- RIGHT LEG
+    }
+    -- Wide zones can fit two text lines (class + material abbr)
+    local ZONE_WIDE = { ["1"] = true, ["2"] = true, ["3"] = true,
+                        ["6"] = true, ["7"] = true }
+    local ZONE_LABELS = {
+        ["1"] = "HEAD",    ["2"] = "CHEST",   ["3"] = "STOMACH",
+        ["4"] = "L.ARM",   ["5"] = "R.ARM",
+        ["6"] = "L.LEG",   ["7"] = "R.LEG",
+    }
+
+    -- Durability → color: morado (low) → azul (mid) → verde (max/healthy)
+    local function DurColor(d)
+        local p = { 139, 127, 232 }
+        local b = { 55,  138, 221 }
+        local g = { 63,  185, 80  }
+        local function lerp3(a, c, t)
+            return Color(
+                math.floor(a[1] + (c[1] - a[1]) * t),
+                math.floor(a[2] + (c[2] - a[2]) * t),
+                math.floor(a[3] + (c[3] - a[3]) * t)
+            )
+        end
+        d = math.Clamp(d or 10, 10, 250)
+        if d <= 125 then return lerp3(p, b, (d - 10) / 115)
+                    else return lerp3(b, g, (d - 125) / 125) end
+    end
+
+    local function markDirty()
+        ADS_Browser.ArmorEditor.dirty = true
+    end
+
+    -- ── Info popup ────────────────────────────────────────────────────────────
+    local CLS_TRIVIA = {
+        [1] = "Threshold 10. Stops basic pistol rounds (9mm Makarov). Any rifle penetrates.",
+        [2] = "Threshold 20. Stops 9mm Luger FMJ, heavy buckshot.  ≈ NIJ IIA.",
+        [3] = "Threshold 30. Stops light rifle rounds (5.45 PS, 7.62×39 PS).  ≈ NIJ IIIA–III.",
+        [4] = "Threshold 40. Stops standard rifle (5.56 M855, 7.62×39 HP).",
+        [5] = "Threshold 50. Stops M855A1, 7.62×39 BP (steel core).",
+        [6] = "Threshold 60. Stops heavy AP: .338 Lapua, 7.62×51 M61.  ≈ NIJ IV.",
+        [7] = "Threshold 70. Upper limit of the standard EFT arsenal.",
+        [8] = "Threshold 80. No standard round penetrates — boss NPCs / power armor only.",
+    }
+    -- img: path passed to DImage:SetImage() — relative to materials/, no extension.
+    -- Files expected at materials/ads/mat_<key>.png  (substitute .vmt when ready).
+    local MAT_TRIVIA = {
+        aramid             = { name = "Aramid (Kevlar)",      img = "ads/mat_aramid",
+            body = "Textile plate. Very durable, repairs easily. Good blunt damage on block.\ncoefDestruc 0.25  ·  blunt 0.30" },
+        titanium           = { name = "Titanium",             img = "ads/mat_titanium",
+            body = "Balanced metal plate. Middle ground between durability and blunt transfer.\ncoefDestruc 0.50  ·  blunt 0.20" },
+        ceramic            = { name = "Ceramic",              img = "ads/mat_ceramic",
+            body = "Absorbs the first hit very well, but shatters in 2–3 impacts. Low blunt.\ncoefDestruc 0.85  ·  blunt 0.15" },
+        poly_ceramic       = { name = "Poly Ceramic",         img = "ads/mat_poly_ceramic",
+            body = "Sci-fi: reactive energy field (HEV charged). Near-indestructible, near-zero blunt.\ncoefDestruc 0.10  ·  blunt 0.05" },
+        nano_titanium      = { name = "Nano Titanium",        img = "ads/mat_nano_titanium",
+            body = "Sci-fi: hydrostatic gel. Completely nullifies blunt trauma on block.\ncoefDestruc 0.35  ·  blunt 0.00" },
+        electrified_aramid = { name = "Electrified Aramid",   img = "ads/mat_electrified_aramid",
+            body = "HECU PCV. Aramid base with an electrified outer layer.\ncoefDestruc 0.25  ·  blunt 0.30" },
+        m_stf              = { name = "M-STF Fluid",          img = "ads/mat_m_stf",
+            body = "Sci-fi: non-Newtonian fluid. Very high blunt without a rigid plate — hardens on impact.\ncoefDestruc 0.15  ·  blunt 0.45" },
+        uranium_matrix     = { name = "Uranium Matrix",       img = "ads/mat_uranium_matrix",
+            body = "Sci-fi: extremely high class, but cracks quickly once breached.\ncoefDestruc 0.75  ·  blunt 0.10" },
+    }
+
+    local function ShowInfoPopup(title, body, imgPath)
+        local hasImg = (imgPath ~= nil and imgPath ~= "")
+        local fw, fh = 260, hasImg and 185 or 110
+        local f = vgui.Create("DFrame")
+        f:SetSize(fw, fh)
+        f:Center()
+        f:SetTitle(title)
+        f:SetDeleteOnClose(true)
+        f:SetDraggable(true)
+        f:SetSizable(false)
+        f:MakePopup()
+
+        if hasImg then
+            local img = vgui.Create("DImage", f)
+            img:SetPos(8, 30)
+            img:SetSize(fw - 16, 75)
+            img:SetImage(imgPath .. ".png")
+            img:SetKeepAspect(true)
+
+            local lbl = vgui.Create("DLabel", f)
+            lbl:SetPos(8, 112)
+            lbl:SetSize(fw - 16, fh - 120)
+            lbl:SetText(body)
+            lbl:SetWrap(true)
+            lbl:SetAutoStretchVertical(true)
+            lbl:SetFont("DermaDefault")
+        else
+            local lbl = vgui.Create("DLabel", f)
+            lbl:SetPos(8, 30)
+            lbl:SetSize(fw - 16, fh - 38)
+            lbl:SetText(body)
+            lbl:SetWrap(true)
+            lbl:SetAutoStretchVertical(true)
+            lbl:SetFont("DermaDefault")
+        end
+    end
+
+    -- ── Silhouette panel ──────────────────────────────────────────────────────
+    local silContainer = vgui.Create("DPanel", parent)
+    silContainer:Dock(TOP)
+    silContainer:SetTall(215)
+    silContainer:DockMargin(0, 4, 0, 4)
+    silContainer.Paint = function() end
+
+    local silPanel = vgui.Create("DPanel", silContainer)
+    silPanel:SetSize(130, 207)
+    silPanel:SetMouseInputEnabled(true)
+    silContainer.PerformLayout = function(self, w, h)
+        silPanel:SetPos(math.floor((w - 130) / 2), 0)
+    end
+
+    silPanel.Paint = function(self, w, h)
+        local profile = ADS_Browser.ArmorEditor.profile or {}
+        local zones   = type(profile.zones) == "table" and profile.zones or {}
+
+        draw.RoundedBox(3, 0, 0, w, h, Color(20, 20, 20))
+        -- Neck connector (visual only, no zone)
+        draw.RoundedBox(2, 60, 39, 10, 9, Color(30, 30, 30))
+
+        surface.SetFont("DermaDefaultBold")
+        for hgKey, rect in pairs(ZONE_RECTS) do
+            local z   = zones[hgKey]
+            local sel = (hgKey == selectedZone)
+            local col = z and DurColor(z.dur_max) or Color(46, 46, 46)
+            local r   = (hgKey == "1") and 14 or 4
+
+            draw.RoundedBox(r, rect.x, rect.y, rect.w, rect.h, col)
+
+            if sel then
+                surface.SetDrawColor(239, 159, 39, 255)
+                surface.DrawOutlinedRect(rect.x - 1, rect.y - 1, rect.w + 2, rect.h + 2, 2)
+            end
+
+            if z then
+                local cls_txt = "C" .. (z.class or "?")
+                local tw, th  = surface.GetTextSize(cls_txt)
+                local cy_off  = ZONE_WIDE[hgKey] and -5 or 0
+                surface.SetTextColor(255, 255, 255, 240)
+                surface.SetTextPos(rect.x + math.floor((rect.w - tw) / 2),
+                                   rect.y + math.floor((rect.h - th) / 2) + cy_off)
+                surface.DrawText(cls_txt)
+
+                if ZONE_WIDE[hgKey] then
+                    surface.SetFont("DermaDefault")
+                    local abbr   = MAT_ABBR[z.material] or "??"
+                    local aw, ah = surface.GetTextSize(abbr)
+                    surface.SetTextPos(rect.x + math.floor((rect.w - aw) / 2),
+                                       rect.y + math.floor((rect.h - ah) / 2) + 7)
+                    surface.DrawText(abbr)
+                    surface.SetFont("DermaDefaultBold")
+                end
+            else
+                surface.SetFont("DermaDefault")
+                surface.SetTextColor(85, 85, 85, 255)
+                local tw, th = surface.GetTextSize("\xe2\x80\x94")  -- em dash
+                surface.SetTextPos(rect.x + math.floor((rect.w - tw) / 2),
+                                   rect.y + math.floor((rect.h - th) / 2))
+                surface.DrawText("\xe2\x80\x94")
+                surface.SetFont("DermaDefaultBold")
+            end
+        end
+    end
+
+    silPanel.OnMouseReleased = function(self, mcode)
+        if mcode ~= MOUSE_LEFT then return end
+        local mx, my = self:CursorPos()
+        for hgKey, rect in pairs(ZONE_RECTS) do
+            if mx >= rect.x and mx < rect.x + rect.w and
+               my >= rect.y and my < rect.y + rect.h then
+                selectedZone = hgKey
+                if setEditor then setEditor(hgKey) end
+                silPanel:InvalidateLayout(true)
+                return
+            end
+        end
+    end
+
+    -- ── Shared zone editor panel ──────────────────────────────────────────────
+    local editorPanel = vgui.Create("DPanel", parent)
+    editorPanel:Dock(TOP)
+    editorPanel:DockMargin(4, 0, 4, 4)
+    editorPanel:SetTall(142)
+    editorPanel.Paint = function() end
+
+    local zoneTitle = vgui.Create("DLabel", editorPanel)
+    zoneTitle:Dock(TOP)
+    zoneTitle:SetTall(18)
+    zoneTitle:DockMargin(0, 2, 0, 2)
+    zoneTitle:SetText("CHEST  (zone 2)")
+    zoneTitle:SetFont("DermaDefaultBold")
+
+    local zoneCB = vgui.Create("DCheckBoxLabel", editorPanel)
+    zoneCB:Dock(TOP)
+    zoneCB:SetTall(20)
+    zoneCB:SetText("Armored")
+    zoneCB:SetValue(false)
+
+    -- Class button row
+    local clsRow = vgui.Create("DPanel", editorPanel)
+    clsRow:Dock(TOP)
+    clsRow:SetTall(26)
+    clsRow:DockMargin(0, 4, 0, 2)
+    clsRow.Paint = function() end
+
+    local clsLabel = vgui.Create("DLabel", clsRow)
+    clsLabel:Dock(LEFT)
+    clsLabel:SetWide(38)
+    clsLabel:SetText("Class:")
+    clsLabel:SetFont("DermaDefault")
+
+    local clsInfoBtn = vgui.Create("DButton", clsRow)
+    clsInfoBtn:Dock(RIGHT)
+    clsInfoBtn:SetWide(22)
+    clsInfoBtn:SetText("?")
+    clsInfoBtn:SetFont("DermaDefaultBold")
+    clsInfoBtn:SetTooltip("Class info")
+
+    local classBtns      = {}
+    local clsBtnContainer = vgui.Create("DPanel", clsRow)
+    clsBtnContainer:Dock(FILL)
+    clsBtnContainer:DockMargin(2, 0, 2, 0)
+    clsBtnContainer.Paint = function() end
+    clsBtnContainer.PerformLayout = function(self, w, h)
+        local bw = math.floor(w / 8)
+        for i, btn in ipairs(classBtns) do
+            btn:SetPos((i - 1) * bw, 0)
+            btn:SetSize(bw - 1, h)
+        end
+    end
+    for i = 1, 8 do
+        local btn = vgui.Create("DButton", clsBtnContainer)
+        btn:SetText(tostring(i))
+        btn:SetFont("DermaDefault")
+        classBtns[i] = btn
+    end
+
+    -- Material row
+    local matRow = vgui.Create("DPanel", editorPanel)
+    matRow:Dock(TOP)
+    matRow:SetTall(24)
+    matRow:DockMargin(0, 2, 0, 2)
+    matRow.Paint = function() end
+
+    local matLabel = vgui.Create("DLabel", matRow)
+    matLabel:Dock(LEFT)
+    matLabel:SetWide(52)
+    matLabel:SetText("Material:")
+    matLabel:SetFont("DermaDefault")
+
+    local matInfoBtn = vgui.Create("DButton", matRow)
+    matInfoBtn:Dock(RIGHT)
+    matInfoBtn:SetWide(22)
+    matInfoBtn:SetText("?")
+    matInfoBtn:SetFont("DermaDefaultBold")
+    matInfoBtn:SetTooltip("Material info")
+
+    local matCombo = vgui.Create("DComboBox", matRow)
+    matCombo:Dock(FILL)
+    for _, mat in ipairs(MAT_LIST) do
+        matCombo:AddChoice(MAT_DISPLAY[mat] or mat, mat, mat == ZONE_DEFAULTS.material)
+    end
+
+    -- Durability row: fila manual (DNumSlider colapsa en DScrollPanel con SetTall fijo)
+    local DUR_MIN, DUR_MAX = 10, 250
+    local durRow = vgui.Create("DPanel", editorPanel)
+    durRow:Dock(TOP)
+    durRow:SetTall(20)
+    durRow:DockMargin(0, 2, 0, 0)
+    durRow.Paint = function() end
+
+    local durLabel = vgui.Create("DLabel", durRow)
+    durLabel:Dock(LEFT)
+    durLabel:SetWide(52)
+    durLabel:SetText("Dur Max")
+    durLabel:SetFont("DermaDefault")
+
+    local durEntry = vgui.Create("DTextEntry", durRow)
+    durEntry:Dock(RIGHT)
+    durEntry:SetWide(36)
+    durEntry:SetNumeric(true)
+
+    local durSlider = vgui.Create("DSlider", durRow)
+    durSlider:Dock(FILL)
+
+    local durUpdating = false
+    local function durSetValue(v)
+        v = math.Clamp(math.floor(v), DUR_MIN, DUR_MAX)
+        durUpdating = true
+        durSlider:SetSlideX((v - DUR_MIN) / (DUR_MAX - DUR_MIN))
+        durEntry:SetText(tostring(v))
+        durUpdating = false
+    end
+    durSetValue(ZONE_DEFAULTS.dur_max)
+
+    local function setControlsEnabled(en)
+        for _, b in ipairs(classBtns) do b:SetEnabled(en) end
+        matCombo:SetEnabled(en)
+        durSlider:SetEnabled(en)
+        durEntry:SetEnabled(en)
+        clsInfoBtn:SetEnabled(en)
+        matInfoBtn:SetEnabled(en)
+    end
+    setControlsEnabled(false)
+
+    -- ── setEditor: load profile data for hgKey into shared controls ───────────
+    setEditor = function(hgKey)
+        if not IsValid(zoneTitle) then return end
+        refreshing = true
+        local profile = ADS_Browser.ArmorEditor.profile or {}
+        local zones   = type(profile.zones) == "table" and profile.zones or {}
+        local z       = zones[hgKey]
+
+        zoneTitle:SetText((ZONE_LABELS[hgKey] or "zone " .. hgKey) .. "  (zone " .. hgKey .. ")")
+        zoneCB:SetValue(z ~= nil)
+        setControlsEnabled(z ~= nil)
+
+        local activeCls = z and (z.class or ZONE_DEFAULTS.class) or ZONE_DEFAULTS.class
+        for i, btn in ipairs(classBtns) do
+            local active = (i == activeCls)
+            btn:SetFont(active and "DermaDefaultBold" or "DermaDefault")
+            btn:SetTextColor(active and Color(255, 255, 255) or Color(180, 180, 180))
+        end
+
+        if z then
+            matCombo:SetValue(MAT_DISPLAY[z.material] or z.material
+                              or MAT_DISPLAY[ZONE_DEFAULTS.material])
+            durSetValue(z.dur_max or ZONE_DEFAULTS.dur_max)
+        else
+            matCombo:SetValue(MAT_DISPLAY[ZONE_DEFAULTS.material])
+            durSetValue(ZONE_DEFAULTS.dur_max)
+        end
+        refreshing = false
+    end
+
+    -- ── Wire class buttons ────────────────────────────────────────────────────
+    for i, btn in ipairs(classBtns) do
+        btn.DoClick = function()
+            if refreshing then return end
+            local profile = ADS_Browser.ArmorEditor.profile
+            if profile.zones and profile.zones[selectedZone] then
+                profile.zones[selectedZone].class = i
+                for j, b in ipairs(classBtns) do
+                    b:SetFont(j == i and "DermaDefaultBold" or "DermaDefault")
+                    b:SetTextColor(j == i and Color(255, 255, 255) or Color(180, 180, 180))
+                end
+                markDirty()
+                silPanel:InvalidateLayout(true)
+            end
+        end
+    end
+
+    clsInfoBtn.DoClick = function()
+        local profile = ADS_Browser.ArmorEditor.profile or {}
+        local zones   = type(profile.zones) == "table" and profile.zones or {}
+        local z       = zones[selectedZone]
+        local cls     = z and z.class or ZONE_DEFAULTS.class
+        ShowInfoPopup("Class " .. cls, CLS_TRIVIA[cls] or "", nil)
+    end
+
+    matInfoBtn.DoClick = function()
+        local profile = ADS_Browser.ArmorEditor.profile or {}
+        local zones   = type(profile.zones) == "table" and profile.zones or {}
+        local z       = zones[selectedZone]
+        local matKey  = z and z.material or ZONE_DEFAULTS.material
+        local tr      = MAT_TRIVIA[matKey] or {}
+        ShowInfoPopup(tr.name or matKey, tr.body or "", tr.img)
+    end
+
+    -- ── Wire zone checkbox ────────────────────────────────────────────────────
+    zoneCB.OnChange = function(_, val)
+        if refreshing then return end
+        local profile = ADS_Browser.ArmorEditor.profile
+        profile.zones = profile.zones or {}
+        if val then
+            profile.zones[selectedZone] = {
+                class    = ZONE_DEFAULTS.class,
+                dur_max  = ZONE_DEFAULTS.dur_max,
+                material = ZONE_DEFAULTS.material,
+            }
+            setControlsEnabled(true)
+            setEditor(selectedZone)
+        else
+            profile.zones[selectedZone] = nil
+            if not next(profile.zones) then profile.zones = nil end
+            setControlsEnabled(false)
+        end
+        markDirty()
+        silPanel:InvalidateLayout(true)
+    end
+
+    matCombo.OnSelect = function(_, _, _, data)
+        if refreshing then return end
+        local profile = ADS_Browser.ArmorEditor.profile
+        if profile.zones and profile.zones[selectedZone] then
+            profile.zones[selectedZone].material = data
+            markDirty()
+            silPanel:InvalidateLayout(true)
+        end
+    end
+
+    durSlider.OnValueChanged = function(_, x)
+        if refreshing or durUpdating then return end
+        local v = math.floor(DUR_MIN + x * (DUR_MAX - DUR_MIN))
+        durUpdating = true
+        durEntry:SetText(tostring(v))
+        durUpdating = false
+        local profile = ADS_Browser.ArmorEditor.profile
+        if profile.zones and profile.zones[selectedZone] then
+            profile.zones[selectedZone].dur_max = v
+            markDirty()
+            silPanel:InvalidateLayout(true)
+        end
+    end
+
+    durEntry.OnEnter = function(self)
+        if refreshing then return end
+        local v = math.Clamp(tonumber(self:GetText()) or DUR_MIN, DUR_MIN, DUR_MAX)
+        durSetValue(v)
+        local profile = ADS_Browser.ArmorEditor.profile
+        if profile.zones and profile.zones[selectedZone] then
+            profile.zones[selectedZone].dur_max = v
+            markDirty()
+            silPanel:InvalidateLayout(true)
+        end
+    end
+    durEntry.OnLostFocus = durEntry.OnEnter
+
+    -- ── Separator ─────────────────────────────────────────────────────────────
+    local sep = vgui.Create("DPanel", parent)
+    sep:Dock(TOP)
+    sep:SetTall(6)
+    sep.Paint = function(self, w, h)
+        surface.SetDrawColor(70, 70, 70)
+        surface.DrawRect(0, 3, w, 1)
+    end
+
+    -- ── Fallback generic block ────────────────────────────────────────────────
+    local fgPanel = vgui.Create("DPanel", parent)
+    fgPanel:Dock(TOP)
+    fgPanel:DockMargin(4, 0, 4, 4)
+    fgPanel:SetTall(118)
+    fgPanel.Paint = function() end
+
+    local fgCB = vgui.Create("DCheckBoxLabel", fgPanel)
+    fgCB:Dock(TOP)
+    fgCB:SetTall(20)
+    fgCB:SetText("Fallback / GENERIC  (non-humanoid NPCs or unmatched hitgroups)")
+    fgCB:SetValue(false)
+
+    local fgClsRow = vgui.Create("DPanel", fgPanel)
+    fgClsRow:Dock(TOP)
+    fgClsRow:SetTall(26)
+    fgClsRow:DockMargin(0, 4, 0, 2)
+    fgClsRow.Paint = function() end
+
+    local fgClsLabel = vgui.Create("DLabel", fgClsRow)
+    fgClsLabel:Dock(LEFT)
+    fgClsLabel:SetWide(38)
+    fgClsLabel:SetText("Class:")
+    fgClsLabel:SetFont("DermaDefault")
+
+    local fgClassBtns     = {}
+    local fgBtnContainer  = vgui.Create("DPanel", fgClsRow)
+    fgBtnContainer:Dock(FILL)
+    fgBtnContainer:DockMargin(2, 0, 2, 0)
+    fgBtnContainer.Paint = function() end
+    fgBtnContainer.PerformLayout = function(self, w, h)
+        local bw = math.floor(w / 8)
+        for i, btn in ipairs(fgClassBtns) do
+            btn:SetPos((i - 1) * bw, 0)
+            btn:SetSize(bw - 1, h)
+        end
+    end
+    for i = 1, 8 do
+        local btn = vgui.Create("DButton", fgBtnContainer)
+        btn:SetText(tostring(i))
+        btn:SetFont("DermaDefault")
+        fgClassBtns[i] = btn
+    end
+
+    local fgMatRow = vgui.Create("DPanel", fgPanel)
+    fgMatRow:Dock(TOP)
+    fgMatRow:SetTall(24)
+    fgMatRow:DockMargin(0, 2, 0, 2)
+    fgMatRow.Paint = function() end
+
+    local fgMatLabel = vgui.Create("DLabel", fgMatRow)
+    fgMatLabel:Dock(LEFT)
+    fgMatLabel:SetWide(52)
+    fgMatLabel:SetText("Material:")
+    fgMatLabel:SetFont("DermaDefault")
+
+    local fgMatCombo = vgui.Create("DComboBox", fgMatRow)
+    fgMatCombo:Dock(FILL)
+    for _, mat in ipairs(MAT_LIST) do
+        fgMatCombo:AddChoice(MAT_DISPLAY[mat] or mat, mat, mat == ZONE_DEFAULTS.material)
+    end
+
+    -- Durability row fallback: misma fila manual que la zona (DUR_MIN/DUR_MAX ya definidos)
+    local fgDurRow = vgui.Create("DPanel", fgPanel)
+    fgDurRow:Dock(TOP)
+    fgDurRow:SetTall(20)
+    fgDurRow:DockMargin(0, 2, 0, 0)
+    fgDurRow.Paint = function() end
+
+    local fgDurLabel = vgui.Create("DLabel", fgDurRow)
+    fgDurLabel:Dock(LEFT)
+    fgDurLabel:SetWide(52)
+    fgDurLabel:SetText("Dur Max")
+    fgDurLabel:SetFont("DermaDefault")
+
+    local fgDurEntry = vgui.Create("DTextEntry", fgDurRow)
+    fgDurEntry:Dock(RIGHT)
+    fgDurEntry:SetWide(36)
+    fgDurEntry:SetNumeric(true)
+
+    local fgDurSlider = vgui.Create("DSlider", fgDurRow)
+    fgDurSlider:Dock(FILL)
+
+    local fgDurUpdating = false
+    local function fgDurSetValue(v)
+        v = math.Clamp(math.floor(v), DUR_MIN, DUR_MAX)
+        fgDurUpdating = true
+        fgDurSlider:SetSlideX((v - DUR_MIN) / (DUR_MAX - DUR_MIN))
+        fgDurEntry:SetText(tostring(v))
+        fgDurUpdating = false
+    end
+    fgDurSetValue(ZONE_DEFAULTS.dur_max)
+
+    local function setFGEnabled(en)
+        for _, b in ipairs(fgClassBtns) do b:SetEnabled(en) end
+        fgMatCombo:SetEnabled(en)
+        fgDurSlider:SetEnabled(en)
+        fgDurEntry:SetEnabled(en)
+    end
+    setFGEnabled(false)
+
+    fgCB.OnChange = function(_, val)
+        if refreshing then return end
+        setFGEnabled(val)
+        local profile = ADS_Browser.ArmorEditor.profile
+        if val then
+            profile.fallback_generic = {
+                class    = ZONE_DEFAULTS.class,
+                dur_max  = ZONE_DEFAULTS.dur_max,
+                material = ZONE_DEFAULTS.material,
+            }
+            for j, b in ipairs(fgClassBtns) do
+                b:SetFont(j == ZONE_DEFAULTS.class and "DermaDefaultBold" or "DermaDefault")
+                b:SetTextColor(j == ZONE_DEFAULTS.class and Color(255,255,255) or Color(180,180,180))
+            end
+            fgMatCombo:SetValue(MAT_DISPLAY[ZONE_DEFAULTS.material])
+            fgDurSetValue(ZONE_DEFAULTS.dur_max)
+        else
+            profile.fallback_generic = nil
+        end
+        markDirty()
+    end
+
+    for i, btn in ipairs(fgClassBtns) do
+        btn.DoClick = function()
+            if refreshing then return end
+            local profile = ADS_Browser.ArmorEditor.profile
+            if profile.fallback_generic then
+                profile.fallback_generic.class = i
+                for j, b in ipairs(fgClassBtns) do
+                    b:SetFont(j == i and "DermaDefaultBold" or "DermaDefault")
+                    b:SetTextColor(j == i and Color(255,255,255) or Color(180,180,180))
+                end
+                markDirty()
+            end
+        end
+    end
+
+    fgMatCombo.OnSelect = function(_, _, _, data)
+        if refreshing then return end
+        local profile = ADS_Browser.ArmorEditor.profile
+        if profile.fallback_generic then
+            profile.fallback_generic.material = data
+            markDirty()
+        end
+    end
+
+    fgDurSlider.OnValueChanged = function(_, x)
+        if refreshing or fgDurUpdating then return end
+        local v = math.floor(DUR_MIN + x * (DUR_MAX - DUR_MIN))
+        fgDurUpdating = true
+        fgDurEntry:SetText(tostring(v))
+        fgDurUpdating = false
+        local profile = ADS_Browser.ArmorEditor.profile
+        if profile.fallback_generic then
+            profile.fallback_generic.dur_max = v
+            markDirty()
+        end
+    end
+
+    fgDurEntry.OnEnter = function(self)
+        if refreshing then return end
+        local v = math.Clamp(tonumber(self:GetText()) or DUR_MIN, DUR_MIN, DUR_MAX)
+        fgDurSetValue(v)
+        local profile = ADS_Browser.ArmorEditor.profile
+        if profile.fallback_generic then
+            profile.fallback_generic.dur_max = v
+            markDirty()
+        end
+    end
+    fgDurEntry.OnLostFocus = fgDurEntry.OnEnter
+
+    -- ── ArmorEditorRefresh — called by net.Receive("ads_armor_data") and Reset All ──
+    ADS_Browser.ArmorEditorRefresh = function()
+        refreshing = true
+        local profile = ADS_Browser.ArmorEditor.profile or {}
+        local zones   = type(profile.zones) == "table" and profile.zones or {}
+        local fg      = profile.fallback_generic
+
+        -- Refresh shared editor for currently selected zone
+        if IsValid(zoneTitle) then
+            local z = zones[selectedZone]
+            zoneTitle:SetText((ZONE_LABELS[selectedZone] or "zone " .. selectedZone)
+                              .. "  (zone " .. selectedZone .. ")")
+            zoneCB:SetValue(z ~= nil)
+            setControlsEnabled(z ~= nil)
+
+            local activeCls = z and (z.class or ZONE_DEFAULTS.class) or ZONE_DEFAULTS.class
+            for i, btn in ipairs(classBtns) do
+                local active = (i == activeCls)
+                btn:SetFont(active and "DermaDefaultBold" or "DermaDefault")
+                btn:SetTextColor(active and Color(255,255,255) or Color(180,180,180))
+            end
+
+            if z then
+                matCombo:SetValue(MAT_DISPLAY[z.material] or z.material
+                                  or MAT_DISPLAY[ZONE_DEFAULTS.material])
+                durSetValue(z.dur_max or ZONE_DEFAULTS.dur_max)
+            else
+                matCombo:SetValue(MAT_DISPLAY[ZONE_DEFAULTS.material])
+                durSetValue(ZONE_DEFAULTS.dur_max)
+            end
+        end
+
+        -- Refresh fallback_generic block
+        if IsValid(fgCB) then
+            fgCB:SetValue(fg ~= nil)
+            setFGEnabled(fg ~= nil)
+
+            local fgCls = fg and (fg.class or ZONE_DEFAULTS.class) or ZONE_DEFAULTS.class
+            for i, b in ipairs(fgClassBtns) do
+                local active = (i == fgCls)
+                b:SetFont(active and "DermaDefaultBold" or "DermaDefault")
+                b:SetTextColor(active and Color(255,255,255) or Color(180,180,180))
+            end
+
+            if fg then
+                fgMatCombo:SetValue(MAT_DISPLAY[fg.material] or fg.material
+                                    or MAT_DISPLAY[ZONE_DEFAULTS.material])
+                fgDurSetValue(fg.dur_max or ZONE_DEFAULTS.dur_max)
+            else
+                fgMatCombo:SetValue(MAT_DISPLAY[ZONE_DEFAULTS.material])
+                fgDurSetValue(ZONE_DEFAULTS.dur_max)
+            end
+        end
+
+        if IsValid(silPanel) then silPanel:InvalidateLayout(true) end
+        refreshing = false
+    end
+end
+
+local function BuildWLTab(parent)
+    local function header(text)
+        local h = vgui.Create("DLabel", parent)
+        h:Dock(TOP)
+        h:DockMargin(4, 8, 4, 2)
+        h:SetText(text)
+        h:SetFont("DermaDefaultBold")
+    end
+
+    local function MakeSlider(lbl, key, min, max, dec)
+        local s = vgui.Create("DNumSlider", parent)
+        s:Dock(TOP)
+        s:DockMargin(4, 2, 4, 2)
+        s:SetText(lbl)
+        s:SetMin(min) s:SetMax(max) s:SetDecimals(dec)
+        s:SetDefaultValue(ADS_Browser.Template[key])
+        s:SetValue(ADS_Browser.Template[key])
+        timer.Simple(0, function() if IsValid(s) then s:SetValue(ADS_Browser.Template[key]) end end)
+        s.OnValueChanged = function(_, v) ADS_Browser.Template[key] = v end
+        ADS_Browser.WLSliders[key] = s  -- ref para refresh in-place desde CopyFromClass
+        return s
+    end
+
+    header("Limb HP Pools  (fraction of NPC base HP, 0-2)")
+    MakeSlider("Head HP Frac",  "head_hp_frac",  0, 2, 2)
+    MakeSlider("Arms HP Frac",  "arms_hp_frac",  0, 2, 2)
+    MakeSlider("Legs HP Frac",  "legs_hp_frac",  0, 2, 2)
+
+    header("Damage Transfer  (to NPC HP when pool empties, 0-3)")
+    MakeSlider("Head Transfer", "limb_damage_transfer_head", 0, 3, 2)
+    MakeSlider("Arms Transfer", "limb_damage_transfer_arms", 0, 3, 2)
+    MakeSlider("Legs Transfer", "limb_damage_transfer_legs", 0, 3, 2)
+
+    header("Damage Multipliers  (1.0 = neutral)")
+    MakeSlider("Head mult",  "mult_head",  0, 5, 2)
+    MakeSlider("Chest mult", "mult_chest", 0, 5, 2)
+    MakeSlider("Arm mult",   "mult_arm",   0, 5, 2)
+    MakeSlider("Leg mult",   "mult_leg",   0, 5, 2)
+end
+
+local function BuildGeneralTab(parent)
+    local function header(text)
+        local h = vgui.Create("DLabel", parent)
+        h:Dock(TOP)
+        h:DockMargin(4, 8, 4, 2)
+        h:SetText(text)
+        h:SetFont("DermaDefaultBold")
+    end
+
+    local function actionButton(label, color, fn)
+        local b = vgui.Create("DButton", parent)
+        b:Dock(TOP)
+        b:DockMargin(4, 2, 4, 2)
+        b:SetTall(24)
+        b:SetText(label)
+        if color then b:SetTextColor(color) end
+        b.DoClick = fn
+        return b
+    end
+
+    header("Actions")
+
+    actionButton("Whitelist Selected", Color(120, 200, 120), function()
+        local classes = {}
+        for c in pairs(ADS_Browser.Selected) do table.insert(classes, c) end
+        if #classes == 0 then return end
+        local doIt = function()
+            -- Armor batch (perfil vacío = borrar armadura en esas clases)
+            net.Start("ads_save_armor_batch")
+            net.WriteTable(classes)
+            net.WriteTable(ADS_Browser.ArmorEditor.profile or {})
+            net.SendToServer()
+            -- Limbs whitelist
+            local t = ADS_Browser.Template
+            local payload = {
+                head_hp_frac              = t.head_hp_frac,
+                arms_hp_frac              = t.arms_hp_frac,
+                legs_hp_frac              = t.legs_hp_frac,
+                limb_damage_transfer_head = t.limb_damage_transfer_head,
+                limb_damage_transfer_arms = t.limb_damage_transfer_arms,
+                limb_damage_transfer_legs = t.limb_damage_transfer_legs,
+                dmg_mult = {
+                    head  = t.mult_head,  chest = t.mult_chest,
+                    arm   = t.mult_arm,   leg   = t.mult_leg,
+                },
+            }
+            net.Start("ads_modify_list")
+            net.WriteString("wl_add_batch")
+            net.WriteTable(payload)
+            net.WriteTable(classes)
+            net.SendToServer()
+        end
+        if #classes > 10 then
+            Derma_Query("Whitelist " .. #classes .. " NPCs with current template?",
+                "ADS Browser", "Yes", doIt, "No")
+        else
+            doIt()
+        end
+    end)
+
+    actionButton("Blacklist Selected", Color(210, 120, 120), function()
+        local classes = {}
+        for c in pairs(ADS_Browser.Selected) do table.insert(classes, c) end
+        if #classes == 0 then return end
+        local doIt = function()
+            net.Start("ads_modify_list")
+            net.WriteString("bl_add_batch")
+            net.WriteTable(classes)
+            net.SendToServer()
+        end
+        if #classes > 10 then
+            Derma_Query("Blacklist " .. #classes .. " NPCs?",
+                "ADS Browser", "Yes", doIt, "No")
+        else
+            doIt()
+        end
+    end)
+
+    actionButton("Remove Selected", nil, function()
+        local classes = {}
+        for c in pairs(ADS_Browser.Selected) do table.insert(classes, c) end
+        if #classes == 0 then return end
+        local doIt = function()
+            local toRemove = {}
+            for _, class in ipairs(classes) do
+                local st = ADS_Browser.State[class]
+                if st == "wl_user" or st == "bl_user" then
+                    table.insert(toRemove, class)
+                end
+            end
+            if #toRemove == 0 then return end
+            net.Start("ads_modify_list")
+            net.WriteString("del_batch")
+            net.WriteTable(toRemove)
+            net.SendToServer()
+        end
+        if #classes > 10 then
+            Derma_Query("Remove " .. #classes .. " NPCs from user lists?",
+                "ADS Browser", "Yes", doIt, "No")
+        else
+            doIt()
+        end
+    end)
+
+    header("Template")
+
+    ADS_Browser.CopyButton = actionButton("Copy Selected", nil, function()
+        local class = ADS_Browser.LastClicked
+        if not class then return end
+        ADS_Browser.CopyFromClass(class)
+    end)
+
+    actionButton("Reset All to Default", nil, function()
+        ADS_Browser.Template = {
+            head_hp_frac              = 0.30,
+            arms_hp_frac              = 0.20,
+            legs_hp_frac              = 0.20,
+            limb_damage_transfer_head = 1.50,
+            limb_damage_transfer_arms = 0.80,
+            limb_damage_transfer_legs = 0.60,
+            mult_head = 1.0, mult_chest = 1.0, mult_arm = 1.0, mult_leg = 1.0,
+        }
+        ADS_Browser.ArmorEditor.profile = {}
+        ADS_Browser.ArmorEditor.dirty   = false
+        if ADS_Browser.ArmorEditorRefresh then ADS_Browser.ArmorEditorRefresh() end
+        if IsValid(ADS_Browser.ArmorSourceLabel) then
+            ADS_Browser.ArmorSourceLabel:SetText("Armor Template  (use Copy Selected or double-click a NPC)")
+            ADS_Browser.ArmorSourceLabel:SetTextColor(Color(130, 130, 130))
+        end
+        -- Reconstruir tab WL para reflejar los sliders reseteados
+        if IsValid(ADS_Browser.RightPanel) then
+            ADS_Browser.RightPanel:Clear()
+            BuildRightPanel(ADS_Browser.RightPanel)
+        end
+    end)
+
+    header("Selection")
+
+    actionButton("Select All", nil, function()
+        for _, entry in ipairs(ADS_Browser.OrderedRows) do
+            if IsValid(entry.row) and entry.row:IsVisible() then
+                ADS_Browser.Selected[entry.class] = true
+            end
+        end
+        ADS_Browser.UpdateSelectionCount()
+    end)
+
+    actionButton("Deselect All", nil, function()
+        ADS_Browser.Selected = {}
+        ADS_Browser.LastClicked = nil
+        ADS_Browser.UpdateSelectionCount()
+    end)
+
+    actionButton("Invert Selection", nil, function()
+        local newSel = {}
+        for _, entry in ipairs(ADS_Browser.OrderedRows) do
+            if IsValid(entry.row) and entry.row:IsVisible() then
+                if not ADS_Browser.Selected[entry.class] then
+                    newSel[entry.class] = true
+                end
+            end
+        end
+        ADS_Browser.Selected = newSel
+        ADS_Browser.UpdateSelectionCount()
+    end)
+
+    header("Catalog")
+
+    actionButton("Refresh from server", nil, function()
+        ADS_Browser.RequestState()
+    end)
+
+    actionButton("Scan world for extra NPCs", nil, function()
+        net.Start("ads_scan_world")
+        net.SendToServer()
+    end)
+end
+
+-- ── Weapons tab — curated penetration overrides + ammo fallback tuning ──────
+
+-- Espejo cliente de ADS.AmmoAlias / ADS.AmmoFallbackDefaults (server, ads_armor.lua).
+-- Solo para mostrar qué bucket resuelve un arma sin datos EFT/curados y para el
+-- botón Reset — el server sigue siendo la única autoridad real.
+local CLIENT_AMMO_ALIAS = {
+    Pistol = "pistol", SMG1 = "smg", AR2 = "rifle", GenericRifle = "rifle",
+    ["357"] = "magnum", buckshot = "shotgun", Buckshot = "shotgun",
+    SniperRound = "sniper", SniperPenetratedRound = "sniper",
+}
+local CLIENT_AMMO_DEFAULTS = {
+    pistol  = { penPower = 20, armorDamage = 25, penChanceBase = 0.20 },
+    smg     = { penPower = 28, armorDamage = 30, penChanceBase = 0.30 },
+    rifle   = { penPower = 42, armorDamage = 45, penChanceBase = 0.50 },
+    magnum  = { penPower = 38, armorDamage = 55, penChanceBase = 0.40 },
+    shotgun = { penPower = 12, armorDamage = 20, penChanceBase = 0.10 },
+    sniper  = { penPower = 60, armorDamage = 70, penChanceBase = 0.75 },
+}
+local AMMO_BUCKET_LABEL = {
+    pistol = "Pistol", smg = "SMG", rifle = "Rifle",
+    magnum = "Magnum (.357)", shotgun = "Shotgun", sniper = "Sniper",
+}
+local WPP_MIN, WPP_MAX = 1, 115
+local WAD_MIN, WAD_MAX = 1, 120
+
+ADS_Browser.CuratedWeapons    = {}   -- [classname] = {penPower, armorDamage, penChanceBase}
+ADS_Browser.AmmoFallback      = {}   -- [bucket] = {...} -- live, viene del server
+ADS_Browser.WeaponsCatalog    = nil  -- construido una vez, client-side, sin net
+ADS_Browser.WeaponsTabRefresh = nil
+
+-- Catálogo cliente desde el SWEP registry. base: "arc9" | "vj" | "tfa" | "other".
+local function BuildWeaponsCatalog()
+    local cat = {}
+    for _, wep in ipairs(weapons.GetList()) do
+        local cls = wep.ClassName
+        if cls and cls ~= "" then
+            local base = "other"
+            if weapons.IsBasedOn(cls, "arc9_base") then base = "arc9"
+            elseif weapons.IsBasedOn(cls, "weapon_vj_base") then base = "vj"
+            elseif string.find(cls, "tfa_", 1, true) then base = "tfa"
+            end
+            cat[cls] = {
+                class = cls,
+                name  = wep.PrintName or cls,
+                base  = base,
+                ammo  = wep.Primary and wep.Primary.Ammo or nil,
+            }
+        end
+    end
+    return cat
+end
+
+net.Receive("ads_weapons_data", function()
+    ADS_Browser.CuratedWeapons = net.ReadTable() or {}
+    ADS_Browser.AmmoFallback   = net.ReadTable() or {}
+    if ADS_Browser.WeaponsTabRefresh then ADS_Browser.WeaponsTabRefresh() end
+end)
+
+local function BuildWeaponsTab(parent)
+    -- ── Search + base filter ─────────────────────────────────────────────────
+    local filterRow = vgui.Create("DPanel", parent)
+    filterRow:Dock(TOP) filterRow:SetTall(24) filterRow:DockMargin(4, 6, 4, 2)
+    filterRow.Paint = function() end
+
+    local searchBox = vgui.Create("DTextEntry", filterRow)
+    searchBox:Dock(FILL)
+    searchBox:SetPlaceholderText("Search by name or classname...")
+
+    local baseFilter = "All"
+    local baseCombo = vgui.Create("DComboBox", filterRow)
+    baseCombo:Dock(RIGHT) baseCombo:SetWide(90)
+    baseCombo:SetValue("All")
+    for _, b in ipairs({"All", "arc9", "tfa", "vj", "other"}) do
+        baseCombo:AddChoice(b == "All" and "All" or b:upper(), b, b == "All")
+    end
+
+    -- ── List ──────────────────────────────────────────────────────────────────
+    local listScroll = vgui.Create("DScrollPanel", parent)
+    listScroll:Dock(TOP) listScroll:SetTall(180) listScroll:DockMargin(4, 2, 4, 4)
+
+    -- ── Shared editor ────────────────────────────────────────────────────────
+    local editorTitle = vgui.Create("DLabel", parent)
+    editorTitle:Dock(TOP) editorTitle:DockMargin(4, 4, 4, 0)
+    editorTitle:SetText("Select a weapon above to edit")
+    editorTitle:SetFont("DermaDefaultBold")
+
+    local noteLabel = vgui.Create("DLabel", parent)
+    noteLabel:Dock(TOP) noteLabel:DockMargin(4, 0, 4, 4)
+    noteLabel:SetText("") noteLabel:SetTextColor(Color(180, 170, 110))
+    noteLabel:SetWrap(true) noteLabel:SetAutoStretchVertical(true)
+
+    local selectedClass = nil
+
+    local function manualRow(label, wide)
+        local row = vgui.Create("DPanel", parent)
+        row:Dock(TOP) row:SetTall(20) row:DockMargin(4, 2, 4, 0)
+        row.Paint = function() end
+        local l = vgui.Create("DLabel", row)
+        l:Dock(LEFT) l:SetWide(wide) l:SetText(label) l:SetFont("DermaDefault")
+        local e = vgui.Create("DTextEntry", row)
+        e:Dock(RIGHT) e:SetWide(40)
+        local s = vgui.Create("DSlider", row)
+        s:Dock(FILL)
+        return e, s
+    end
+
+    local ppEntry, ppSlider = manualRow("Pen. Power", 90)
+    local adEntry, adSlider = manualRow("Armor Dmg",  90)
+    local pcEntry, pcSlider = manualRow("Pen. Chance", 90)
+    ppEntry:SetNumeric(true) adEntry:SetNumeric(true)
+
+    local function ppSetValue(v) v=math.Clamp(math.floor(v),WPP_MIN,WPP_MAX) ppSlider:SetSlideX((v-WPP_MIN)/(WPP_MAX-WPP_MIN)) ppEntry:SetText(tostring(v)) end
+    local function adSetValue(v) v=math.Clamp(math.floor(v),WAD_MIN,WAD_MAX) adSlider:SetSlideX((v-WAD_MIN)/(WAD_MAX-WAD_MIN)) adEntry:SetText(tostring(v)) end
+    local function pcSetValue(v) v=math.Clamp(v,0,1) pcSlider:SetSlideX(v) pcEntry:SetText(string.format("%.2f", v)) end
+
+    local function setEditorEnabled(en)
+        ppSlider:SetEnabled(en) ppEntry:SetEnabled(en)
+        adSlider:SetEnabled(en) adEntry:SetEnabled(en)
+        pcSlider:SetEnabled(en) pcEntry:SetEnabled(en)
+    end
+    setEditorEnabled(false)
+
+    ppSlider.OnValueChanged = function(_, x) ppEntry:SetText(tostring(math.floor(WPP_MIN + x*(WPP_MAX-WPP_MIN)))) end
+    ppEntry.OnEnter = function(self) ppSetValue(tonumber(self:GetText()) or WPP_MIN) end
+    ppEntry.OnLostFocus = ppEntry.OnEnter
+
+    adSlider.OnValueChanged = function(_, x) adEntry:SetText(tostring(math.floor(WAD_MIN + x*(WAD_MAX-WAD_MIN)))) end
+    adEntry.OnEnter = function(self) adSetValue(tonumber(self:GetText()) or WAD_MIN) end
+    adEntry.OnLostFocus = adEntry.OnEnter
+
+    pcSlider.OnValueChanged = function(_, x) pcEntry:SetText(string.format("%.2f", x)) end
+    pcEntry.OnEnter = function(self) pcSetValue(tonumber(self:GetText()) or 0) end
+    pcEntry.OnLostFocus = pcEntry.OnEnter
+
+    -- ── Botones ──────────────────────────────────────────────────────────────
+    local btnRow = vgui.Create("DPanel", parent)
+    btnRow:Dock(TOP) btnRow:SetTall(24) btnRow:DockMargin(4, 6, 4, 4)
+    btnRow.Paint = function() end
+    local saveBtn = vgui.Create("DButton", btnRow)
+    saveBtn:Dock(LEFT) saveBtn:SetWide(90) saveBtn:SetText("Save")
+    local resetBtn = vgui.Create("DButton", btnRow)
+    resetBtn:Dock(LEFT) resetBtn:DockMargin(4, 0, 0, 0) resetBtn:SetWide(140)
+    resetBtn:SetText("Reset to Fallback")
+
+    local function loadWeapon(cls, data)
+        selectedClass = cls
+        editorTitle:SetText((data.name or cls) .. "  (" .. cls .. ")")
+
+        local curated = ADS_Browser.CuratedWeapons[cls]
+        local bucket  = data.ammo and (CLIENT_AMMO_ALIAS[data.ammo] or CLIENT_AMMO_ALIAS[string.lower(data.ammo)])
+        local fb      = (bucket and ADS_Browser.AmmoFallback[bucket]) or ADS_Browser.AmmoFallback.pistol or CLIENT_AMMO_DEFAULTS.pistol
+        local values  = curated or fb
+
+        ppSetValue(values.penPower)
+        adSetValue(values.armorDamage)
+        pcSetValue(values.penChanceBase)
+        setEditorEnabled(true)
+
+        if data.base == "arc9" then
+            noteLabel:SetText("ARC9 weapon: if the equipped round carries live EFT data, EFT values win over this entry. This only applies when the round has no EFT data.")
+        elseif curated then
+            noteLabel:SetText("Curated entry active.")
+        else
+            noteLabel:SetText("No curated entry -- showing ammo fallback bucket: "
+                .. (AMMO_BUCKET_LABEL[bucket] or "Pistol") .. ". Press Save to curate this weapon specifically.")
+        end
+    end
+
+    saveBtn.DoClick = function()
+        if not selectedClass then return end
+        net.Start("ads_save_curated")
+        net.WriteString(selectedClass)
+        net.WriteTable({
+            penPower      = tonumber(ppEntry:GetText()) or WPP_MIN,
+            armorDamage   = tonumber(adEntry:GetText()) or WAD_MIN,
+            penChanceBase = tonumber(pcEntry:GetText()) or 0,
+        })
+        net.SendToServer()
+    end
+
+    resetBtn.DoClick = function()
+        if not selectedClass then return end
+        net.Start("ads_save_curated")
+        net.WriteString(selectedClass)
+        net.WriteTable({})  -- vacío = borra la entrada curada
+        net.SendToServer()
+    end
+
+    -- ── Render list ───────────────────────────────────────────────────────────
+    local function renderList()
+        listScroll:Clear()
+        local search = string.lower(searchBox:GetValue() or "")
+        local cat = ADS_Browser.WeaponsCatalog or {}
+        local names = {}
+        for cls in pairs(cat) do table.insert(names, cls) end
+        table.sort(names)
+
+        for _, cls in ipairs(names) do
+            local data = cat[cls]
+            if (baseFilter == "All" or data.base == baseFilter)
+               and (search == "" or string.find(string.lower(data.name), search, 1, true)
+                                  or string.find(string.lower(cls), search, 1, true)) then
+                local row = vgui.Create("DButton", listScroll)
+                row:Dock(TOP) row:SetTall(22) row:DockMargin(0, 1, 0, 0)
+                row:SetText("")
+
+                local curated    = ADS_Browser.CuratedWeapons[cls]
+                local badge      = curated and "Curated" or "Fallback"
+                local badgeColor = curated and Color(120, 200, 120) or Color(160, 160, 160)
+
+                row.Paint = function(self, w, h)
+                    if self:IsHovered() then
+                        surface.SetDrawColor(60, 60, 60, 255)
+                        surface.DrawRect(0, 0, w, h)
+                    end
+                    surface.SetFont("DermaDefault")
+                    surface.SetTextColor(220, 220, 220, 255)
+                    surface.SetTextPos(4, 4)
+                    surface.DrawText((data.name or cls) .. "  [" .. cls .. "]  (" .. data.base:upper() .. ")")
+                    surface.SetTextColor(badgeColor.r, badgeColor.g, badgeColor.b, 255)
+                    surface.SetTextPos(w - 60, 4)
+                    surface.DrawText(badge)
+                end
+                row.DoClick = function() loadWeapon(cls, data) end
+            end
+        end
+    end
+
+    searchBox.OnChange = renderList
+    baseCombo.OnSelect = function(_, _, _, data) baseFilter = data renderList() end
+
+    if not ADS_Browser.WeaponsCatalog then
+        ADS_Browser.WeaponsCatalog = BuildWeaponsCatalog()
+    end
+    net.Start("ads_request_weapons_data")
+    net.SendToServer()
+    renderList()
+
+    -- ── Ammo Defaults ─────────────────────────────────────────────────────────
+    local sep2 = vgui.Create("DPanel", parent)
+    sep2:Dock(TOP) sep2:SetTall(6) sep2:DockMargin(4, 6, 4, 0)
+    sep2.Paint = function(self, w, h) surface.SetDrawColor(70, 70, 70) surface.DrawRect(0, 3, w, 1) end
+
+    local ammoHeader = vgui.Create("DLabel", parent)
+    ammoHeader:Dock(TOP) ammoHeader:DockMargin(4, 4, 4, 2)
+    ammoHeader:SetText("Ammo Defaults  (fallback buckets for uncurated non-EFT weapons)")
+    ammoHeader:SetFont("DermaDefaultBold")
+
+    local bucketRows = {}
+
+    local function makeBucketRow(bucket)
+        local box = vgui.Create("DPanel", parent)
+        box:Dock(TOP) box:SetTall(66) box:DockMargin(4, 2, 4, 2)
+        box.Paint = function(self, w, h) surface.SetDrawColor(35, 35, 35, 255) surface.DrawRect(0, 0, w, h) end
+
+        local lbl = vgui.Create("DLabel", box)
+        lbl:Dock(TOP) lbl:SetTall(16) lbl:DockMargin(4, 2, 4, 0)
+        lbl:SetText(AMMO_BUCKET_LABEL[bucket] or bucket)
+        lbl:SetFont("DermaDefaultBold")
+
+        local function bucketField(label)
+            local r = vgui.Create("DPanel", box)
+            r:Dock(TOP) r:SetTall(16) r:DockMargin(4, 1, 4, 0)
+            r.Paint = function() end
+            local l = vgui.Create("DLabel", r)
+            l:Dock(LEFT) l:SetWide(30) l:SetText(label) l:SetFont("DermaDefault")
+            local e = vgui.Create("DTextEntry", r)
+            e:Dock(RIGHT) e:SetWide(40)
+            local s = vgui.Create("DSlider", r)
+            s:Dock(FILL)
+            return e, s
+        end
+
+        local ppE, ppS = bucketField("Pen")
+        local adE, adS = bucketField("Arm")
+        local pcE, pcS = bucketField("Chn")
+        ppE:SetNumeric(true) adE:SetNumeric(true)
+
+        local function setPP(v) v=math.Clamp(math.floor(v),WPP_MIN,WPP_MAX) ppS:SetSlideX((v-WPP_MIN)/(WPP_MAX-WPP_MIN)) ppE:SetText(tostring(v)) end
+        local function setAD(v) v=math.Clamp(math.floor(v),WAD_MIN,WAD_MAX) adS:SetSlideX((v-WAD_MIN)/(WAD_MAX-WAD_MIN)) adE:SetText(tostring(v)) end
+        local function setPC(v) v=math.Clamp(v,0,1) pcS:SetSlideX(v) pcE:SetText(string.format("%.2f", v)) end
+
+        ppS.OnValueChanged = function(_, x) ppE:SetText(tostring(math.floor(WPP_MIN + x*(WPP_MAX-WPP_MIN)))) end
+        ppE.OnEnter = function(self) setPP(tonumber(self:GetText()) or WPP_MIN) end
+        ppE.OnLostFocus = ppE.OnEnter
+
+        adS.OnValueChanged = function(_, x) adE:SetText(tostring(math.floor(WAD_MIN + x*(WAD_MAX-WAD_MIN)))) end
+        adE.OnEnter = function(self) setAD(tonumber(self:GetText()) or WAD_MIN) end
+        adE.OnLostFocus = adE.OnEnter
+
+        pcS.OnValueChanged = function(_, x) pcE:SetText(string.format("%.2f", x)) end
+        pcE.OnEnter = function(self) setPC(tonumber(self:GetText()) or 0) end
+        pcE.OnLostFocus = pcE.OnEnter
+
+        bucketRows[bucket] = { ppE=ppE, adE=adE, pcE=pcE, setPP=setPP, setAD=setAD, setPC=setPC }
+    end
+
+    for _, bucket in ipairs({"pistol","smg","rifle","magnum","shotgun","sniper"}) do
+        makeBucketRow(bucket)
+    end
+
+    local ammoBtnRow = vgui.Create("DPanel", parent)
+    ammoBtnRow:Dock(TOP) ammoBtnRow:SetTall(24) ammoBtnRow:DockMargin(4, 4, 4, 4)
+    ammoBtnRow.Paint = function() end
+    local saveAmmoBtn = vgui.Create("DButton", ammoBtnRow)
+    saveAmmoBtn:Dock(LEFT) saveAmmoBtn:SetWide(140) saveAmmoBtn:SetText("Save Ammo Defaults")
+    local resetAmmoBtn = vgui.Create("DButton", ammoBtnRow)
+    resetAmmoBtn:Dock(LEFT) resetAmmoBtn:DockMargin(4, 0, 0, 0) resetAmmoBtn:SetWide(140)
+    resetAmmoBtn:SetText("Reset All to Default")
+
+    saveAmmoBtn.DoClick = function()
+        local payload = {}
+        for bucket, r in pairs(bucketRows) do
+            payload[bucket] = {
+                penPower      = tonumber(r.ppE:GetText()) or WPP_MIN,
+                armorDamage   = tonumber(r.adE:GetText()) or WAD_MIN,
+                penChanceBase = tonumber(r.pcE:GetText()) or 0,
+            }
+        end
+        net.Start("ads_save_ammo_fallback")
+        net.WriteTable(payload)
+        net.SendToServer()
+    end
+
+    resetAmmoBtn.DoClick = function()
+        for bucket, r in pairs(bucketRows) do
+            local def = CLIENT_AMMO_DEFAULTS[bucket]
+            r.setPP(def.penPower) r.setAD(def.armorDamage) r.setPC(def.penChanceBase)
+        end
+    end
+
+    ADS_Browser.WeaponsTabRefresh = function()
+        renderList()
+        if selectedClass and ADS_Browser.WeaponsCatalog[selectedClass] then
+            loadWeapon(selectedClass, ADS_Browser.WeaponsCatalog[selectedClass])
+        end
+        for bucket, r in pairs(bucketRows) do
+            local live = ADS_Browser.AmmoFallback[bucket] or CLIENT_AMMO_DEFAULTS[bucket]
+            r.setPP(live.penPower) r.setAD(live.armorDamage) r.setPC(live.penChanceBase)
+        end
+    end
+end
+
+function BuildRightPanel(parent)
+    local sheet = vgui.Create("DPropertySheet", parent)
+    sheet:Dock(FILL)
+    sheet:DockMargin(0, 0, 0, 0)
+
+    local armorScroll   = vgui.Create("DScrollPanel")
+    local wlScroll      = vgui.Create("DScrollPanel")
+    local weaponsScroll = vgui.Create("DScrollPanel")
+    local generalScroll = vgui.Create("DScrollPanel")
+
+    sheet:AddSheet("Armor",      armorScroll,   nil, false, false)
+    sheet:AddSheet("Limbs / WL", wlScroll,      nil, false, false)
+    sheet:AddSheet("Weapons",    weaponsScroll, nil, false, false)
+    sheet:AddSheet("General",    generalScroll, nil, false, false)
+
+    BuildArmorTab(armorScroll)
+    BuildWLTab(wlScroll)
+    BuildWeaponsTab(weaponsScroll)
+    BuildGeneralTab(generalScroll)
+end
+
+function ADS_Browser.Open()
+    if not LocalPlayer():IsAdmin() then
+        notification.AddLegacy("ADS Browser: admin only", NOTIFY_ERROR, 4)
+        return
+    end
+
+    if IsValid(ADS_Browser.Frame) then
+        ADS_Browser.Frame:MakePopup()
+        return
+    end
+
+    local f = vgui.Create("DFrame")
+    local w = math.max(CV_W:GetInt(), 600)
+    local h = math.max(CV_H:GetInt(), 400)
+    f:SetSize(w, h)
+    local sx, sy = CV_X:GetInt(), CV_Y:GetInt()
+    if sx < 0 or sy < 0 or sx > ScrW() - 100 or sy > ScrH() - 100 then
+        f:Center()
+    else
+        f:SetPos(sx, sy)
+    end
+    f:SetTitle("ADS Configuration")
+    f:SetSizable(true)
+    f:MakePopup()
+    ADS_Browser.Frame = f
+
+    -- Barra superior: info + búsqueda + contador de selección
+    local topBar = vgui.Create("DPanel", f)
+    topBar:Dock(TOP)
+    topBar:DockMargin(8, 4, 8, 2)
+    topBar:SetTall(24)
+    topBar.Paint = function() end
+
+    local header = vgui.Create("DLabel", topBar)
+    header:Dock(LEFT)
+    header:SetWide(260)
+    header:SetText("Building catalog...")
+    ADS_Browser.Header = header
+
+    local selLabel = vgui.Create("DLabel", topBar)
+    selLabel:Dock(RIGHT)
+    selLabel:SetWide(120)
+    selLabel:SetContentAlignment(6)
+    selLabel:SetText("0 selected")
+    ADS_Browser.SelLabel = selLabel
+
+    local searchBox = vgui.Create("DTextEntry", topBar)
+    searchBox:Dock(FILL)
+    searchBox:DockMargin(8, 2, 8, 2)
+    searchBox:SetPlaceholderText("Search by name or classname...")
+    searchBox.OnChange = function(self)
+        ADS_Browser.Filter.search = self:GetValue() or ""
+        ApplyFilter()
+    end
+
+    -- Segunda barra: filtros de categoría + estado
+    local filterBar = vgui.Create("DPanel", f)
+    filterBar:Dock(TOP)
+    filterBar:DockMargin(8, 2, 8, 2)
+    filterBar:SetTall(24)
+    filterBar.Paint = function() end
+
+    local catCombo = vgui.Create("DComboBox", filterBar)
+    catCombo:Dock(LEFT)
+    catCombo:SetWide(180)
+    catCombo:SetValue("All categories")
+    catCombo:AddChoice("All", "All", true)
+    catCombo.OnSelect = function(_, _, _, data)
+        ADS_Browser.Filter.category = data
+        ApplyFilter()
+    end
+    ADS_Browser.CatCombo = catCombo
+
+    local stateOrder = {
+        {"wl_user", "WL"}, {"wl_hard", "WL-H"},
+        {"bl_user", "BL"}, {"bl_hard", "BL-H"},
+        {"vj_pattern", "VJ"}, {"vj_auto", "VJa"},
+        {"unknown", "?"}, {"none", "-"},
+    }
+    for _, pair in ipairs(stateOrder) do
+        local cb = vgui.Create("DCheckBoxLabel", filterBar)
+        cb:Dock(LEFT)
+        cb:DockMargin(6, 4, 0, 0)
+        cb:SetText(pair[2])
+        cb:SetValue(true)
+        cb:SizeToContents()
+        cb.OnChange = function(_, val)
+            ADS_Browser.Filter.states[pair[1]] = val
+            ApplyFilter()
+        end
+    end
+
+    local divider = vgui.Create("DHorizontalDivider", f)
+    divider:Dock(FILL)
+    divider:DockMargin(8, 4, 8, 8)
+    divider:SetDividerWidth(4)
+    divider:SetLeftMin(400)
+    divider:SetRightMin(240)
+
+    -- Contenedor izquierdo: header de columnas fijo + scroll
+    local leftContainer = vgui.Create("DPanel", divider)
+    leftContainer.Paint = function() end
+    divider:SetLeft(leftContainer)
+
+    local colHeader = vgui.Create("DPanel", leftContainer)
+    colHeader:Dock(TOP)
+    colHeader:SetTall(22)
+    colHeader.Paint = function(self, w, h)
+        surface.SetDrawColor(55, 55, 55, 255)
+        surface.DrawRect(0, 0, w, h)
+        surface.SetDrawColor(80, 80, 80, 255)
+        surface.DrawLine(0, h - 1, w, h - 1)
+        surface.SetFont("DermaDefaultBold")
+        surface.SetTextColor(200, 200, 200, 255)
+        local cols = {
+            { x = 32,  label = "Name" },
+            { x = 210, label = "Classname" },
+            { x = 390, label = "St" },
+            { x = 425, label = "Arm" },
+            { x = 465, label = "H/C/A/L" },
+        }
+        for _, c in ipairs(cols) do
+            surface.SetTextPos(c.x, 4)
+            surface.DrawText(c.label)
+        end
+    end
+
+    local scroll = vgui.Create("DScrollPanel", leftContainer)
+    scroll:Dock(FILL)
+    ADS_Browser.Scroll = scroll
+
+    local right = vgui.Create("DPanel", divider)
+    right.Paint = function() end
+    divider:SetRight(right)
+    ADS_Browser.RightPanel = right
+
+    -- Proporción 70/30 (o la guardada) tras el primer layout del DFrame
+    timer.Simple(0, function()
+        if IsValid(divider) and IsValid(f) then
+            local ratio = math.Clamp(CV_DIV:GetFloat(), 0.4, 0.85)
+            local totalW = f:GetWide() - 16
+            divider:SetLeftWidth(math.floor(totalW * ratio))
+        end
+    end)
+
+    BuildRightPanel(right)
+
+    -- Construir catálogo cliente
+    ADS_Browser.Catalog = BuildCatalog()
+    local total = table.Count(ADS_Browser.Catalog)
+    header:SetText("Catalog: " .. total .. " NPCs  |  Requesting state from server...")
+
+    -- Poblar dropdown de categorías
+    local seen = {}
+    for _, data in pairs(ADS_Browser.Catalog) do
+        seen[data.category] = true
+    end
+    local sortedCats = {}
+    for c, _ in pairs(seen) do table.insert(sortedCats, c) end
+    table.sort(sortedCats)
+    for _, c in ipairs(sortedCats) do
+        ADS_Browser.CatCombo:AddChoice(c, c, false)
+    end
+
+    -- Primer render con estados vacíos, luego request al server
+    RenderCatalog(scroll)
+    -- Si el stool ya tenía listas cacheadas, las usamos de inmediato
+    if ADS and ADS.ClientLists then
+        ADS_Browser.Whitelist = ADS.ClientLists.whitelist or {}
+        ADS_Browser.Blacklist = ADS.ClientLists.blacklist or {}
+        dprint("Open: usando ClientLists cacheadas | wl=", table.Count(ADS_Browser.Whitelist))
+    end
+    ADS_Browser.RequestState()
+    net.Start("ads_request_lists")
+    net.SendToServer()
+
+    f.OnRemove = function()
+        local px, py = f:GetPos()
+        local pw, ph = f:GetSize()
+        RunConsoleCommand("ads_browser_x", tostring(px))
+        RunConsoleCommand("ads_browser_y", tostring(py))
+        RunConsoleCommand("ads_browser_w", tostring(pw))
+        RunConsoleCommand("ads_browser_h", tostring(ph))
+        if IsValid(divider) then
+            local ratio = divider:GetLeftWidth() / math.max(pw - 16, 1)
+            RunConsoleCommand("ads_browser_div_ratio", tostring(ratio))
+        end
+        ADS_Browser.Frame = nil
+        ADS_Browser.Scroll = nil
+        ADS_Browser.Rows = nil
+        ADS_Browser.RowsBuilt = false
+        ADS_Browser.Selected = {}
+        ADS_Browser.LastClicked = nil
+        ADS_Browser.OrderedRows = {}
+        ADS_Browser.Categories = {}
+        ADS_Browser.Filter.search = ""
+        ADS_Browser.Filter.category = "All"
+        ADS_Browser.Filter.states = {
+            wl_user = true, wl_hard = true,
+            bl_user = true, bl_hard = true,
+            vj_pattern = true, vj_auto = true,
+            unknown = true, none = true,
+        }
+        ADS_Browser._debugged = {}
+        ADS_Browser.Armored = {}
+        ADS_Browser.ArmorEditor = { classname = nil, profile = {}, dirty = false }
+        ADS_Browser.ArmorEditorRefresh = nil
+        ADS_Browser.WLSliders = {}
+    end
+end
+
+function ADS_Browser.UpdateCopyButton()
+    if not IsValid(ADS_Browser.CopyButton) then return end
+    local count = 0
+    local single
+    for c, _ in pairs(ADS_Browser.Selected) do
+        count = count + 1
+        single = c
+        if count > 1 then break end
+    end
+    local enabled = count == 1 and ADS_Browser.State[single] == "wl_user"
+    dprint("UpdateCopyButton | count=", count, "| single=", single,
+        "| state=", single and ADS_Browser.State[single], "| enabled=", enabled)
+    ADS_Browser.CopyButton:SetEnabled(enabled)
+    ADS_Browser.CopyButton:SetTooltip(
+        enabled and nil or "Requires exactly 1 selection with user whitelist override"
+    )
+end
+
+function ADS_Browser.UpdateSelectionCount()
+    if not IsValid(ADS_Browser.SelLabel) then return end
+    local n = 0
+    for _ in pairs(ADS_Browser.Selected) do n = n + 1 end
+    ADS_Browser.SelLabel:SetText(n .. " selected")
+    ADS_Browser.UpdateCopyButton()
+    if IsValid(ADS_Browser.Scroll) then
+        ADS_Browser.Scroll:InvalidateLayout()
+    end
+end
+
+net.Receive("ads_scan_world_result", function()
+    local classes = net.ReadTable() or {}
+    local added = 0
+    for _, class in ipairs(classes) do
+        if not ADS_Browser.Catalog[class] then
+            ADS_Browser.Catalog[class] = {
+                class     = class,
+                name      = class,
+                category  = "World-only (unregistered)",
+                model     = nil,
+                icon_path = nil,
+            }
+            added = added + 1
+        end
+    end
+    notification.AddLegacy("Scan world: " .. added .. " new NPCs added to catalog", NOTIFY_GENERIC, 4)
+    if added > 0 and IsValid(ADS_Browser.Frame) then
+        ADS_Browser.RowsBuilt = false
+        RenderCatalog(ADS_Browser.Scroll)
+        -- Agregar categoría al dropdown si no estaba ya
+        local found = false
+        local cat = ADS_Browser.CatCombo
+        if IsValid(cat) then
+            for i, label in ipairs(cat.Choices or {}) do
+                if cat.Data and cat.Data[i] == "World-only (unregistered)" then
+                    found = true break
+                end
+            end
+            if not found then
+                cat:AddChoice("World-only (unregistered)", "World-only (unregistered)", false)
+            end
+        end
+        ADS_Browser.RequestState()
+    end
+end)
+
+-- Comando de consola para abrir, util para pruebas antes de agregar el bot�n
+concommand.Add("ads_browser",    function() ADS_Browser.Open() end)  -- alias de compatibilidad
+concommand.Add("ads_config_ui",  function() ADS_Browser.Open() end)
+
+concommand.Add("ads_browser_debug_reset", function()
+    ADS_Browser._debugged = {}
+    print("[ADS_Browser] debug cache cleared, next paint will re-print")
+end)
+
+--- Comando de consola para debug: muestra en consola los campos de list.Get("NPC")[classname]
+concommand.Add("ads_browser_dump", function(_, _, args)
+    local class = args[1]
+    if not class then
+        print("uso: ads_browser_dump <classname>")
+        return
+    end
+    local npcs = list.Get("NPC")
+    local data = npcs[class]
+    if not data then
+        print("No existe en list.Get('NPC'): " .. class)
+        return
+    end
+    print("=== Campos de " .. class .. " ===")
+    for k, v in pairs(data) do
+        print(string.format("  %s = %s (%s)", tostring(k), tostring(v), type(v)))
+    end
+end)
+
+--- Comando de consola para debug: muestra en consola las rutas de icono candidatas y si existen o no
+concommand.Add("ads_browser_findicon", function(_, _, args)
+    local class = args[1]
+    if not class then print("uso: ads_browser_findicon <classname>") return end
+    local candidates = {
+        "materials/vgui/entities/" .. class .. ".vmt",
+        "materials/vgui/entities/" .. class .. ".png",
+        "materials/entities/" .. class .. ".vmt",
+        "materials/entities/" .. class .. ".png",
+    }
+    for _, path in ipairs(candidates) do
+        local exists = file.Exists(path, "GAME")
+        print(string.format("  %s => %s", path, exists and "FOUND" or "missing"))
+    end
+end)

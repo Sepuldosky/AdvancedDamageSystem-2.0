@@ -1,0 +1,159 @@
+ADVANCED DAMAGE SYSTEM 2.0 — CONVENCIONES DE GIT COMMITS
+Guía de estandarización para el historial de cambios del repositorio
+=====================================================
+Documento vivo — actualizaciones según evolución del flujo.
+Basado en las convenciones de KONTROL, adaptado al stack GLua / Garry's Mod.
+=====================================================
+
+
+0. PROPÓSITO Y AUDIENCIA
+--------------------------
+
+Este documento establece las reglas y la estructura obligatoria para la
+redacción de mensajes de commit en el repositorio de ADVANCED DAMAGE SYSTEM
+2.0. Su objetivo es mantener un historial limpio, legible y automatizable,
+facilitando el rastreo de cambios entre los módulos de servidor (Lua),
+cliente (VGUI/HUD) y la documentación de arquitectura.
+
+Aplica de forma estricta a todo commit confirmado en el repositorio,
+independientemente de quién o qué lo origine.
+
+
+1. ESTRUCTURA OBLIGATORIA DEL MENSAJE
+---------------------------------------
+
+Todo commit DEBE seguir el estándar de Conventional Commits adaptado al
+proyecto, utilizando el siguiente formato:
+
+  <tipo>(<alcance>): <descripción corta>
+
+Los tipos van en inglés (ver sección 2). La descripción y el cuerpo
+opcional del commit van en español.
+
+Reglas críticas de formato:
+- NUNCA empezar la descripción con mayúscula.
+- NUNCA incluir un punto (.) al final de la descripción.
+- Usar el tiempo presente imperativo (ej: "añade" en lugar de "añadido",
+  "aplica" en lugar de "aplicando").
+
+
+2. TIPOS DE COMMIT PERMITIDOS (<tipo>)
+----------------------------------------
+
+El tipo define la naturaleza del cambio introducido. Se prohíben términos
+genéricos como "cambios", "fix" a secas o "tarea". Los tipos válidos son:
+
+  feat:
+    Una nueva funcionalidad para el sistema (nueva lógica de armadura,
+    resolvers, subsistemas, tabs del browser, net messages o comandos).
+
+  fix:
+    Corrección de un error o bug activo en el código Lua o en el esquema
+    del JSON de configuración.
+
+  refactor:
+    Modificaciones en el código Lua que no añaden funcionalidades ni
+    corrigen errores (ej: reordenar la jerarquía del extractor, limpiar
+    ramas, extraer funciones puras).
+
+  docs:
+    Cambios exclusivos en archivos de documentación (archivos .txt, .md,
+    documentos de arquitectura o prompts de Claude). No debe tocar código.
+
+  chore:
+    Tareas de mantenimiento rutinario que no afectan la lógica del addon
+    ni la documentación (ej: .gitignore, estructura de carpetas, assets).
+
+  test:
+    Añadir, modificar o corregir bloques de auto-test o comandos de
+    validación en consola (ej: ads_test_*, bloques de math self-check).
+
+
+3. ALCANCES ESPECÍFICOS DEL PROYECTO (<alcance>)
+--------------------------------------------------
+
+El alcance identifica el módulo o área afectada por el cambio. Debe ir
+siempre entre paréntesis. Para ADS 2.0, los alcances definidos son:
+
+  core:
+    Núcleo de servidor (ads_core.lua): autoridad de armadura 2.0, hook
+    ScaleNPCDamage, whitelist/blacklist, multiplicadores de hitgroup,
+    persistencia JSON, net.Receive y compat ARC9.
+
+  armor:
+    Extractor y Resolver puros (ads_armor.lua): tablas de materiales,
+    ammo fallback, curated weapons, matemática de penetración, NWvars
+    de armadura por zona.
+
+  limbs:
+    Subsistema de HP por extremidad (ads_limbs.lua): pools head/arms/legs,
+    debuffs, drop de arma, stun y API de healing.
+
+  scavenger:
+    Módulo de recogida de armas por NPCs (ads_scavenger.lua).
+
+  weapons:
+    Modificador de penetración por arma: curated weapons y ammo fallback
+    (Block 7). Abarca el flujo server + tab Weapons del browser cuando el
+    cambio es transversal a esa feature.
+
+  browser:
+    Browser visual "ADS Configuration" (cl_ads_browser.lua): tabs
+    Armor/Limbs WL/Weapons/General, template model, batch actions.
+
+  hud:
+    Paneles del menú Q y HUD de cliente (cl_ads.lua).
+
+  toolgun:
+    Stool de debug (ads_config.lua): aplicar/copiar armadura y limbs
+    per-entity, inspección.
+
+  config:
+    Esquema del JSON de configuración (ads_config.json), migraciones de
+    formato de datos y saneamiento de campos persistidos.
+
+  core (arquitectura base):
+    Configuraciones globales del addon, ConVars transversales y estructura
+    de carga de archivos autorun.
+
+
+4. EJEMPLOS PRÁCTICOS DE APLICACIÓN
+-------------------------------------
+
+  4.1 Armadura y penetración:
+    - feat(armor): añade tabla editable AmmoFallbackDefaults y validadores
+    - refactor(armor): rejerarquiza ExtractBulletData para curar cualquier arma
+    - fix(armor): corrige clamp de penChanceBase fuera de rango 0-1
+
+  4.2 Núcleo de servidor:
+    - feat(core): añade net handlers del tab Weapons y persistencia ammo_fallback
+    - fix(core): resuelve inline la armadura ARC9 cuando falta el stash
+    - feat(weapons): implementa curated weapons + ammo fallback (Block 7)
+
+  4.3 Cliente y UI:
+    - feat(browser): añade cuarta pestaña Weapons a ADS Configuration
+    - fix(browser): corrige bucket mostrado para armas ARC9 sin Primary.Ammo
+    - refactor(hud): limpia paneles del menú Q
+
+  4.4 Documentación:
+    - docs(armor): actualiza §18 con el flujo de curated weapons
+    - docs(core): añade convenciones de commits y descripción del repo
+
+
+5. AUTOMATIZACIÓN EN VSCODE
+-----------------------------
+
+Para garantizar que el flujo sea ágil y no requiera construcción manual
+en cada commit, se recomienda el uso de herramientas integradas en VSCode:
+
+  Extensión Conventional Commits:
+    Instalar la extensión "Conventional Commits" de Vivian De Smedt. Ofrece
+    un menú desplegable interactivo en la barra de Git para estructurar el
+    tipo, alcance y descripción de forma automática.
+
+=====================================================
+Documentos complementarios:
+  docs/ADS_2_0_Architecture_updated.md   → arquitectura autocontenida (§1-§18)
+  docs/ADS_Block4_Architecture.md        → Browser UI 2.0
+  docs/ADS_Block5_Architecture.md        → restructura del browser (tabs)
+=====================================================
