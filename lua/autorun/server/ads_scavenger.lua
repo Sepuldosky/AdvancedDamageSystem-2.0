@@ -178,6 +178,17 @@ function ADS.SetWeaponWeight(class, weight)
     print("[ADS Scavenger] Weight override set:", class, "=", weight)
 end
 
+-- Clear a manual weight override and re-invalidate the cache of spawned weapons.
+function ADS.ClearWeaponWeight(class)
+    if not class or class == "" then return end
+    ADS.ScavengerWeightOverrides[class] = nil
+    SaveOverrides()
+    for _, wep in ipairs(ents.FindByClass(class)) do
+        if IsValid(wep) then wep.ADS_AutoWeight = nil end
+    end
+    print("[ADS Scavenger] Weight override cleared for:", class)
+end
+
 function ADS.GetWeaponWeightOverride(class)
     return ADS.ScavengerWeightOverrides[class]
 end
@@ -632,12 +643,7 @@ concommand.Add("ads_scavenger_clear_weight", function(ply, cmd, args)
         print("[ADS Scavenger] Usage: ads_scavenger_clear_weight <class>")
         return
     end
-    ADS.ScavengerWeightOverrides[class] = nil
-    SaveOverrides()
-    for _, wep in ipairs(ents.FindByClass(class)) do
-        if IsValid(wep) then wep.ADS_AutoWeight = nil end
-    end
-    print("[ADS Scavenger] Weight override cleared for:", class)
+    ADS.ClearWeaponWeight(class)
 end)
 
 concommand.Add("ads_scavenger_list_weights", function(ply, cmd, args)
@@ -649,6 +655,39 @@ concommand.Add("ads_scavenger_list_weights", function(ply, cmd, args)
         count = count + 1
     end
     if count == 0 then print("  (none)") end
+end)
+
+-- ============================================================
+-- Browser UI: weight overrides (net strings registered in ads_core.lua)
+-- ============================================================
+
+local function SendScavWeightsTo(ply)
+    if not IsValid(ply) then return end
+    net.Start("ads_scav_weights_data")
+    net.WriteTable(ADS.ScavengerWeightOverrides or {})
+    net.Send(ply)
+end
+
+net.Receive("ads_request_scav_weights", function(_, ply)
+    if not IsValid(ply) or not ply:IsAdmin() then return end
+    SendScavWeightsTo(ply)
+end)
+
+-- Payload: string classname + bool remove + float weight.
+-- Explicit remove flag: 0 is a legitimate weight ("never pick this up"),
+-- so no magic sentinel values.
+net.Receive("ads_save_scav_weight", function(_, ply)
+    if not IsValid(ply) or not ply:IsAdmin() then return end
+    local class  = net.ReadString()
+    local remove = net.ReadBool()
+    local weight = net.ReadFloat()
+    if not class or class == "" then return end
+    if remove then
+        ADS.ClearWeaponWeight(class)
+    else
+        ADS.SetWeaponWeight(class, weight)  -- clamps to [0,1000] and persists JSON
+    end
+    SendScavWeightsTo(ply)  -- echo back so the client re-renders with fresh data
 end)
 
 -- ============================================================

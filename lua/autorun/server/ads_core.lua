@@ -748,6 +748,9 @@ util.AddNetworkString("ads_request_weapons_data")
 util.AddNetworkString("ads_weapons_data")
 util.AddNetworkString("ads_save_curated")
 util.AddNetworkString("ads_save_ammo_fallback")
+util.AddNetworkString("ads_request_scav_weights")
+util.AddNetworkString("ads_scav_weights_data")
+util.AddNetworkString("ads_save_scav_weight")
 
 local function GetAdmins()
     local t = {}

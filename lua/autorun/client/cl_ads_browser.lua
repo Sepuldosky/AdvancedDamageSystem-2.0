@@ -1859,6 +1859,231 @@ local function BuildWeaponsTab(parent)
     end
 end
 
+-- ── Scavenger tab — overrides de peso de armas para el scavenger de NPCs ─────
+
+-- Espejo cliente de ADS.ScavengerWeightOverrides (server, ads_scavenger.lua).
+-- El server es la única autoridad; esto solo refleja el último eco recibido.
+ADS_Browser.ScavWeights    = {}    -- [classname] = peso
+ADS_Browser.ScavTabRefresh = nil
+
+-- Réplica cliente de la fórmula de peso automático del server (solo estimación
+-- para mostrar en el editor; los SWEP de server pueden diferir del registry local).
+local SCAV_SLOT_WEIGHTS = {[0]=1, [1]=5, [2]=8, [3]=12, [4]=15}
+local function EstimateAutoWeight(cls)
+    local swep = weapons.GetStored(cls)
+    if not swep then return nil end
+    local dmg   = tonumber(swep.Primary and swep.Primary.Damage)   or 0
+    local delay = tonumber(swep.Primary and swep.Primary.Delay)    or 1
+    local clip  = tonumber(swep.Primary and swep.Primary.ClipSize) or 1
+    local w
+    if dmg <= 0 then
+        local slot = tonumber(swep.Slot) or -1
+        w = SCAV_SLOT_WEIGHTS[slot] or (slot >= 5 and 10 or 3)
+    else
+        w = dmg * (1 / math.max(delay, 0.05)) * math.sqrt(math.max(clip, 1)) / 10
+    end
+    return math.Clamp(w, 0.1, 100)
+end
+
+net.Receive("ads_scav_weights_data", function()
+    ADS_Browser.ScavWeights = net.ReadTable() or {}
+    if ADS_Browser.ScavTabRefresh then ADS_Browser.ScavTabRefresh() end
+end)
+
+local SW_SLIDER_MAX = 100   -- los pesos auto nunca superan 100; el texto acepta hasta 1000
+local SW_MAX        = 1000  -- paridad con el clamp del server (ADS.SetWeaponWeight)
+
+local function BuildScavengerTab(parent)
+    local header = vgui.Create("DLabel", parent)
+    header:Dock(TOP) header:DockMargin(4, 6, 4, 2)
+    header:SetText("NPC scavenger weapon weights. Higher weight = more desirable. Weapons without an override use the auto formula (DPS-based, or a flat per-slot value when the SWEP exposes no damage). Override 0 = NPCs never pick that weapon up.")
+    header:SetWrap(true) header:SetAutoStretchVertical(true)
+    header:SetTextColor(Color(180, 170, 110))
+
+    -- ── Search + filtro de overrides ─────────────────────────────────────────
+    local filterRow = vgui.Create("DPanel", parent)
+    filterRow:Dock(TOP) filterRow:SetTall(24) filterRow:DockMargin(4, 4, 4, 2)
+    filterRow.Paint = function() end
+
+    local searchBox = vgui.Create("DTextEntry", filterRow)
+    searchBox:Dock(FILL)
+    searchBox:SetPlaceholderText("Search by name or classname...")
+
+    local showMode = "All"
+    local showCombo = vgui.Create("DComboBox", filterRow)
+    showCombo:Dock(RIGHT) showCombo:SetWide(110)
+    showCombo:SetValue("All")
+    showCombo:AddChoice("All", "All", true)
+    showCombo:AddChoice("Overridden only", "Overridden")
+
+    -- ── List ──────────────────────────────────────────────────────────────────
+    local listScroll = vgui.Create("DScrollPanel", parent)
+    listScroll:Dock(TOP) listScroll:SetTall(180) listScroll:DockMargin(4, 2, 4, 4)
+
+    -- ── Editor ────────────────────────────────────────────────────────────────
+    local editorTitle = vgui.Create("DLabel", parent)
+    editorTitle:Dock(TOP) editorTitle:DockMargin(4, 4, 4, 0)
+    editorTitle:SetText("Select a weapon above to edit")
+    editorTitle:SetFont("DermaDefaultBold")
+
+    local infoLabel = vgui.Create("DLabel", parent)
+    infoLabel:Dock(TOP) infoLabel:DockMargin(4, 0, 4, 4)
+    infoLabel:SetText("") infoLabel:SetTextColor(Color(180, 170, 110))
+    infoLabel:SetWrap(true) infoLabel:SetAutoStretchVertical(true)
+
+    local selectedClass = nil
+
+    local wRow = vgui.Create("DPanel", parent)
+    wRow:Dock(TOP) wRow:SetTall(20) wRow:DockMargin(4, 2, 4, 0)
+    wRow.Paint = function() end
+    local wLabel = vgui.Create("DLabel", wRow)
+    wLabel:Dock(LEFT) wLabel:SetWide(90) wLabel:SetText("Weight") wLabel:SetFont("DermaDefault")
+    local wEntry = vgui.Create("DTextEntry", wRow)
+    wEntry:Dock(RIGHT) wEntry:SetWide(50)
+    wEntry:SetNumeric(true)
+    local wSlider = vgui.Create("DSlider", wRow)
+    wSlider:Dock(FILL)
+    StyleManualSlider(wSlider)
+
+    local function wSetValue(v)
+        v = math.Clamp(tonumber(v) or 0, 0, SW_MAX)
+        wSlider:SetSlideX(math.Clamp(v, 0, SW_SLIDER_MAX) / SW_SLIDER_MAX)
+        wEntry:SetText(string.format("%.1f", v))
+    end
+    wSlider.OnValueChanged = function(_, x) wEntry:SetText(string.format("%.1f", x * SW_SLIDER_MAX)) end
+    wEntry.OnEnter = function(self) wSetValue(tonumber(self:GetText()) or 0) end
+    wEntry.OnLostFocus = wEntry.OnEnter
+
+    local function setEditorEnabled(en)
+        wSlider:SetEnabled(en) wEntry:SetEnabled(en)
+    end
+    setEditorEnabled(false)
+
+    local function loadClass(cls)
+        selectedClass = cls
+        local data = ADS_Browser.WeaponsCatalog and ADS_Browser.WeaponsCatalog[cls]
+        editorTitle:SetText(((data and data.name) or cls) .. "  (" .. cls .. ")")
+
+        local override = ADS_Browser.ScavWeights[cls]
+        local auto     = EstimateAutoWeight(cls)
+        local autoTxt  = auto and string.format("%.1f", auto) or "unknown (class not in client registry)"
+        wSetValue(override or auto or 1)
+        setEditorEnabled(true)
+
+        if override then
+            infoLabel:SetText(string.format("Override active: %.1f.  Estimated auto weight: %s (server is the authority).", override, autoTxt))
+        else
+            infoLabel:SetText("No override -- estimated auto weight: " .. autoTxt .. " (server is the authority). Press Save Override to pin a value.")
+        end
+    end
+
+    -- ── Entrada manual de classname (clases server-only fuera del catálogo) ──
+    local loadRow = vgui.Create("DPanel", parent)
+    loadRow:Dock(TOP) loadRow:SetTall(22) loadRow:DockMargin(4, 4, 4, 0)
+    loadRow.Paint = function() end
+    local classEntry = vgui.Create("DTextEntry", loadRow)
+    classEntry:Dock(FILL)
+    classEntry:SetPlaceholderText("Or type a classname not listed above...")
+    local loadBtn = vgui.Create("DButton", loadRow)
+    loadBtn:Dock(RIGHT) loadBtn:DockMargin(4, 0, 0, 0) loadBtn:SetWide(80)
+    loadBtn:SetText("Load class")
+    loadBtn.DoClick = function()
+        local cls = string.Trim(classEntry:GetValue() or "")
+        if cls == "" then return end
+        loadClass(cls)
+    end
+
+    -- ── Botones ──────────────────────────────────────────────────────────────
+    local btnRow = vgui.Create("DPanel", parent)
+    btnRow:Dock(TOP) btnRow:SetTall(24) btnRow:DockMargin(4, 6, 4, 4)
+    btnRow.Paint = function() end
+    local saveBtn = vgui.Create("DButton", btnRow)
+    saveBtn:Dock(LEFT) saveBtn:SetWide(110) saveBtn:SetText("Save Override")
+    local removeBtn = vgui.Create("DButton", btnRow)
+    removeBtn:Dock(LEFT) removeBtn:DockMargin(4, 0, 0, 0) removeBtn:SetWide(120)
+    removeBtn:SetText("Remove Override")
+
+    -- Borrado por flag explícito (no valor mágico): peso 0 es legítimo
+    saveBtn.DoClick = function()
+        if not selectedClass then return end
+        net.Start("ads_save_scav_weight")
+        net.WriteString(selectedClass)
+        net.WriteBool(false)
+        net.WriteFloat(math.Clamp(tonumber(wEntry:GetText()) or 1, 0, SW_MAX))
+        net.SendToServer()
+    end
+    removeBtn.DoClick = function()
+        if not selectedClass then return end
+        net.Start("ads_save_scav_weight")
+        net.WriteString(selectedClass)
+        net.WriteBool(true)
+        net.WriteFloat(0)
+        net.SendToServer()
+    end
+
+    -- ── Render list ───────────────────────────────────────────────────────────
+    local function renderList()
+        listScroll:Clear()
+        local search = string.lower(searchBox:GetValue() or "")
+        local cat = ADS_Browser.WeaponsCatalog or {}
+
+        -- Une catálogo cliente + clases con override (pueden ser server-only)
+        local names, seen = {}, {}
+        for cls in pairs(cat) do seen[cls] = true table.insert(names, cls) end
+        for cls in pairs(ADS_Browser.ScavWeights) do
+            if not seen[cls] then table.insert(names, cls) end
+        end
+        table.sort(names)
+
+        for _, cls in ipairs(names) do
+            local data     = cat[cls]
+            local name     = (data and data.name) or cls
+            local override = ADS_Browser.ScavWeights[cls]
+            if (showMode == "All" or override ~= nil)
+               and (search == "" or string.find(string.lower(name), search, 1, true)
+                                  or string.find(string.lower(cls), search, 1, true)) then
+                local row = vgui.Create("DButton", listScroll)
+                row:Dock(TOP) row:SetTall(22) row:DockMargin(0, 1, 0, 0)
+                row:SetText("")
+
+                local badge      = override and string.format("W=%.1f", override) or "Auto"
+                local badgeColor = override and Color(120, 200, 120) or Color(160, 160, 160)
+                local baseTxt    = data and ("  (" .. (BASE_DISPLAY[data.base] or data.base:upper()) .. ")") or ""
+
+                row.Paint = function(self, w, h)
+                    if self:IsHovered() then
+                        surface.SetDrawColor(60, 60, 60, 255)
+                        surface.DrawRect(0, 0, w, h)
+                    end
+                    surface.SetFont("DermaDefault")
+                    surface.SetTextColor(220, 220, 220, 255)
+                    surface.SetTextPos(4, 4)
+                    surface.DrawText(name .. "  [" .. cls .. "]" .. baseTxt)
+                    surface.SetTextColor(badgeColor.r, badgeColor.g, badgeColor.b, 255)
+                    surface.SetTextPos(w - 70, 4)
+                    surface.DrawText(badge)
+                end
+                row.DoClick = function() loadClass(cls) end
+            end
+        end
+    end
+
+    searchBox.OnChange = renderList
+    showCombo.OnSelect = function(_, _, _, data) showMode = data renderList() end
+
+    ADS_Browser.ScavTabRefresh = function()
+        renderList()
+        if selectedClass then loadClass(selectedClass) end  -- rehidrata con el eco del server
+    end
+
+    if not ADS_Browser.WeaponsCatalog then
+        ADS_Browser.WeaponsCatalog = BuildWeaponsCatalog()
+    end
+    net.Start("ads_request_scav_weights")
+    net.SendToServer()
+    renderList()
+end
+
 function BuildRightPanel(parent)
     local sheet = vgui.Create("DPropertySheet", parent)
     sheet:Dock(FILL)
@@ -1867,16 +2092,19 @@ function BuildRightPanel(parent)
     local armorScroll   = vgui.Create("DScrollPanel")
     local wlScroll      = vgui.Create("DScrollPanel")
     local weaponsScroll = vgui.Create("DScrollPanel")
+    local scavScroll    = vgui.Create("DScrollPanel")
     local generalScroll = vgui.Create("DScrollPanel")
 
     sheet:AddSheet("Armor",      armorScroll,   nil, false, false)
     sheet:AddSheet("Limbs / WL", wlScroll,      nil, false, false)
     sheet:AddSheet("Weapons",    weaponsScroll, nil, false, false)
+    sheet:AddSheet("Scavenger",  scavScroll,    nil, false, false)
     sheet:AddSheet("General",    generalScroll, nil, false, false)
 
     BuildArmorTab(armorScroll)
     BuildWLTab(wlScroll)
     BuildWeaponsTab(weaponsScroll)
+    BuildScavengerTab(scavScroll)
     BuildGeneralTab(generalScroll)
 end
 
