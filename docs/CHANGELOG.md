@@ -87,6 +87,48 @@ overrides de peso por classname (antes solo por concommand).
 
 ---
 
+## PARCHES DE sesión Feedback sonoro de armadura por material — 2026-07-06
+
+Sesión de diseño: el "efecto metálico" al impactar armadura (único: sonido, sin
+partículas) pasa a depender del **material** de la placa; se añaden sonidos de
+**headshot** estilo CS y de **gunshotblocked**, cada uno con su toggle. Sonidos custom
+del usuario movidos a `sound/ads/`. Todo dentro del alcance NPC-only existente
+(`ScaleNPCDamage`). Decisiones: cuerpo → solo materiales **duros** suenan (blandas =
+aramida/`electrified_aramid`/`m_stf` = silencio); cabeza blindada → **reemplaza** el
+sonido de bloqueo por el ding de headshot; Hard/Light por **bloqueo vs. penetración**.
+
+- PARCHE 1 — Flag `hard` por material (`ads_armor.lua`): campo estático nuevo en
+  `ADS.Materials` (duros: titanium/ceramic/poly_ceramic/nano_titanium/uranium_matrix;
+  blandos: aramid/electrified_aramid/m_stf). No lo usa la matemática del resolver, solo
+  el feedback sonoro. Respeta el contrato de pureza (tabla estática). **[PENDIENTE]**
+
+- PARCHE 2 — Orquestador `PlayArmorSounds` (`ads_core.lua`): reemplaza `PlayHitSound`.
+  Recibe `(npc, hg, material, blocked, dur)` y decide qué suena. Clang metálico
+  (`physics/metal/metal_solid_impact_bullet*`) ahora gateado por `mat.hard` — placas
+  blandas mudas. Se añade `material = zona.material` al `ADS_ArmorStash` del detour ARC9
+  para que el path stash conozca el material. Los 3 call sites (stash / inline_arc9 /
+  inline) llaman al orquestador **siempre que se resolvió armadura** (antes solo en
+  bloqueo), y esto **normaliza** la asimetría previa (el path stash sonaba también en
+  penetración de cuerpo; ahora el cuerpo solo suena al bloquear en los 3 paths).
+  **[PENDIENTE]**
+
+- PARCHE 3 — Sonido gunshotblocked (`ads_core.lua`): al bloquear con placa dura suena
+  `sound/ads/GunshotBlocked.wav` / `GunshotBlocked2.wav` (aleatorio). Convar
+  `ads_gunshotblocked_enabled` (1). **[PENDIENTE]**
+
+- PARCHE 4 — Sonido de headshot (`ads_core.lua`): impacto a **cabeza con armadura**
+  reproduce `sound/ads/HeadshotHard.wav` si el casco bloquea o `HeadshotLight.wav` si
+  penetra, y **reemplaza** gunshotblocked+clang en la cabeza (suena aunque el casco sea
+  material blando). Convar `ads_headshot_sound_enabled` (1); con el toggle off, la
+  cabeza cae a la lógica normal de cuerpo. **[PENDIENTE]**
+
+- PARCHE 5 — UI + assets: checkboxes "Enable Gunshot-Blocked Sound" y "Enable Headshot
+  Sound" (+ resets) en el panel Armor de `cl_ads.lua`; los 4 `.wav` movidos de `sound/`
+  a `sound/ads/` (referenciados como `ads/<archivo>.wav`, precache en carga).
+  **[PENDIENTE]**
+
+---
+
 ## PARCHES DE sesión Metodología de trabajo — 2026-07-04
 
 Portación de la forma de trabajar de Kontrol a ADS: docs vivos (estado/rumbo/changelog)

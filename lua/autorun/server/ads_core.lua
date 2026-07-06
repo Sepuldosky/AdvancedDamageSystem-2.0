@@ -10,6 +10,8 @@ local BLAST  = CreateConVar("ads_blast_mult",    "0.5", FCVAR_REPLICATED + FCVAR
 local CRUSH  = CreateConVar("ads_crush_mult",    "0.5", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local HELMET = CreateConVar("ads_helmet_mult",   "0.5", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local SND_EN = CreateConVar("ads_sound_enabled", "1",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
+local GSB_EN = CreateConVar("ads_gunshotblocked_enabled", "1", FCVAR_REPLICATED + FCVAR_ARCHIVE)
+local HS_EN  = CreateConVar("ads_headshot_sound_enabled", "1", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local EN_NPC = CreateConVar("ads_enabled_npc",   "1",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local EN_PLY = CreateConVar("ads_enabled_ply",   "1",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local LM_H   = CreateConVar("ads_limb_mult_head","1.0", FCVAR_REPLICATED + FCVAR_ARCHIVE)
@@ -546,10 +548,45 @@ local function ApplyDamageMultiplier(victim,hitgroup,dmginfo)
     dmginfo:SetDamage(d*mult)
 end
 
-local function PlayHitSound(v,ab)
-    if not SND_EN:GetBool() then return end
-    local vol=math.Clamp(ab/100,0.4,1)
-    v:EmitSound("physics/metal/metal_solid_impact_bullet"..math.random(1,4)..".wav",75,math.random(90,110),vol)
+-- Sonidos custom del addon (carpeta sound/ads/). Se referencian relativos a sound/.
+local SND_BLOCKED  = { "ads/GunshotBlocked.wav", "ads/GunshotBlocked2.wav" }
+local SND_HS_HARD  = "ads/HeadshotHard.wav"    -- casco detiene la bala
+local SND_HS_LIGHT = "ads/HeadshotLight.wav"   -- bala penetra el casco
+-- precache: evita que el primer disparo suene mudo
+for _, s in ipairs(SND_BLOCKED) do util.PrecacheSound(s) end
+util.PrecacheSound(SND_HS_HARD)
+util.PrecacheSound(SND_HS_LIGHT)
+
+-- Feedback sonoro de armadura. Se llama siempre que se resolvió armadura sobre el NPC.
+--   hg       : hitgroup impactado
+--   material : string del material de la placa (clave de ADS.Materials)
+--   blocked  : true si la placa detuvo la bala; false si penetró
+--   dur      : durabilidad de la placa (modula el volumen del clang metálico)
+local function PlayArmorSounds(npc, hg, material, blocked, dur)
+    -- Cabeza con armadura: el ding de headshot REEMPLAZA todo lo demás
+    -- (Hard = casco aguanta, Light = casco penetrado). Suena aunque el material
+    -- sea blando: la cabeza es la excepción a "blandas en silencio".
+    if hg == HITGROUP_HEAD and HS_EN:GetBool() then
+        npc:EmitSound(blocked and SND_HS_HARD or SND_HS_LIGHT, 75, math.random(96,104), 1)
+        return
+    end
+
+    -- Resto del cuerpo: solo suena al BLOQUEAR
+    if not blocked then return end
+
+    -- Placas blandas (aramida/fluido no-newtoniano) = silencio: no clanguean
+    local mat = ADS.Materials[material]
+    if not (mat and mat.hard) then return end
+
+    -- gunshotblocked: la bala fue detenida por la armadura
+    if GSB_EN:GetBool() then
+        npc:EmitSound(SND_BLOCKED[math.random(1, #SND_BLOCKED)], 75, math.random(95,110), 1)
+    end
+    -- clang metálico: solo materiales duros; volumen según durabilidad restante
+    if SND_EN:GetBool() then
+        local vol = math.Clamp((dur or 100)/100, 0.4, 1)
+        npc:EmitSound("physics/metal/metal_solid_impact_bullet"..math.random(1,4)..".wav", 75, math.random(90,110), vol)
+    end
 end
 
 
@@ -593,9 +630,7 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
                     if stash.durKey ~= nil and stash.durKey ~= "" then
                         npc:SetNWInt("ADS_Armor_Dur_" .. stash.durKey, stash.newDur)
                     end
-                    if stash.factor < 1.0 then
-                        PlayHitSound(npc, stash.newDur)
-                    end
+                    PlayArmorSounds(npc, hg, stash.material, not stash.penetra, stash.newDur)
                 end
                 -- debug: read enriched stash fields deposited by the ARC9 detour
                 armorPath   = "stash"
@@ -617,7 +652,7 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
                     local res   = ADS.ResolveArmor(zona, tuple, hg)
                     di:SetDamage(res.fleshDmg)
                     npc:SetNWInt("ADS_Armor_Dur_" .. zona.durKey, res.newDur)
-                    if res.factorPenleft == 0 then PlayHitSound(npc, zona.durActual) end
+                    PlayArmorSounds(npc, hg, zona.material, res.factorPenleft == 0, zona.durActual)
                     armorPath   = "inline_arc9"
                     armorSrc    = tuple.source  or "-"
                     armorPen    = (res.factorPenleft > 0)
@@ -642,7 +677,7 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
                 local res   = ADS.ResolveArmor(zona, tuple, hg)
                 di:SetDamage(res.fleshDmg)
                 npc:SetNWInt("ADS_Armor_Dur_" .. zona.durKey, res.newDur)
-                if res.factorPenleft == 0 then PlayHitSound(npc, zona.durActual) end
+                PlayArmorSounds(npc, hg, zona.material, res.factorPenleft == 0, zona.durActual)
                 -- debug: inline resolve
                 armorPath   = "inline"
                 armorSrc    = tuple.source  or "-"
@@ -1104,6 +1139,7 @@ hook.Add("InitPostEntity", "ADS_ARC9_Compat", function()
                     factor     = res.fleshDmg,
                     newDur     = res.newDur,
                     durKey     = zona.durKey,
+                    material   = zona.material,   -- lo consume PlayArmorSounds (clang por material)
                     frame      = FrameNumber(),
                     -- debug fields (consumed by ScaleNPCDamage trace only)
                     penetra    = (res.factorPenleft > 0),

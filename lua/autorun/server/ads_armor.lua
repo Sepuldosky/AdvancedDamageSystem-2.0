@@ -5,15 +5,18 @@ ADS = ADS or {}
 -- §10 -- Material definitions
 -- coefDestruc : plate wear multiplier per hit (higher = degrades faster)
 -- blunt       : fraction of blocked damage that leaks as blunt trauma
+-- hard        : true = placa rígida/metálica (emite clang metálico al impactar);
+--               false = placa blanda/textil o fluido (no clanguea) -- lo lee el
+--               feedback sonoro en ads_core, no la matemática del resolver
 ADS.Materials = {
-    aramid             = { coefDestruc = 0.25, blunt = 0.30 },
-    titanium           = { coefDestruc = 0.50, blunt = 0.20 },
-    ceramic            = { coefDestruc = 0.85, blunt = 0.15 },
-    poly_ceramic       = { coefDestruc = 0.10, blunt = 0.05 },
-    nano_titanium      = { coefDestruc = 0.35, blunt = 0.00 },
-    electrified_aramid = { coefDestruc = 0.25, blunt = 0.30 },
-    m_stf              = { coefDestruc = 0.15, blunt = 0.45 },
-    uranium_matrix     = { coefDestruc = 0.75, blunt = 0.10 },
+    aramid             = { coefDestruc = 0.25, blunt = 0.30, hard = false },
+    titanium           = { coefDestruc = 0.50, blunt = 0.20, hard = true  },
+    ceramic            = { coefDestruc = 0.85, blunt = 0.15, hard = true  },
+    poly_ceramic       = { coefDestruc = 0.10, blunt = 0.05, hard = true  },
+    nano_titanium      = { coefDestruc = 0.35, blunt = 0.00, hard = true  },
+    electrified_aramid = { coefDestruc = 0.25, blunt = 0.30, hard = false },
+    m_stf              = { coefDestruc = 0.15, blunt = 0.45, hard = false },
+    uranium_matrix     = { coefDestruc = 0.75, blunt = 0.10, hard = true  },
 }
 
 -- §4 -- Ammo type fallback table (~6 EFT-equivalent granularity buckets)

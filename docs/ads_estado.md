@@ -38,6 +38,12 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
   template, Copy Selected, doble-click, batch apply. Tab Scavenger edita los
   overrides de peso (contrato net propio, admin-gated).
 - **Toolgun** (`ads_config.lua`): debug puro per-entity (M1/M2/Reload), no toca el JSON.
+- **Feedback sonoro de armadura** (`ads_core.lua` `PlayArmorSounds`): clang metálico
+  solo en materiales **duros** (`ADS.Materials[*].hard`); placas blandas (aramida /
+  `electrified_aramid` / `m_stf`) en silencio. Bloqueo de cuerpo → `sound/ads/
+  GunshotBlocked*`; cabeza blindada → `HeadshotHard` (bloquea) / `HeadshotLight`
+  (penetra), reemplaza al sonido de bloqueo. Toggles `ads_sound_enabled` /
+  `ads_gunshotblocked_enabled` / `ads_headshot_sound_enabled`.
 - **Block 7 — Weapon Penetration Modifier:** tabla curada abierta a cualquier base,
   Ammo Fallback editable (6 buckets), tab Weapons, contrato de red completo. **Código
   aplicado** (presente en `ads_armor.lua` / `ads_core.lua` / `cl_ads_browser.lua`).
@@ -48,6 +54,10 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
   (`path=stash` del detour vs. `path=inline_arc9`) cuando un NPC (scavenger /
   `arc9_givenpcweapon`) dispara ARC9. El código cubre ambos; falta la confirmación real
   con `ads_debug 3`. Ver §18 (caso borde abierto) del doc de arquitectura.
+- **Sesión Feedback sonoro (5 parches `[PENDIENTE]` en CHANGELOG):** confirmar en juego
+  los 3 sonidos por path (stash ARC9 / inline VJ) y material, el mapeo Hard/Light
+  (bloqueo vs. penetración) del headshot y que las placas blandas quedan mudas.
+  Case-sensitivity de `sound/ads/*.wav` en dedicado Linux (nombres capitalizados).
 - **Sesión Scavenger (3 parches `[PENDIENTE]` en CHANGELOG):** recuperación feliz
   (VJ + nativo), fallback por arma tomada/timeout, no-upgrade armado, nunca-armados
   con `force_all 1`, y tab Scavenger (set/remove/eco). Con `ads_scavenger_debug 1`.
