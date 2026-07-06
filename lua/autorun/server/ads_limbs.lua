@@ -226,9 +226,12 @@ local function InitLimbs(npc)
     -- Base accuracy; read once at spawn, never updated (prevents drift)
     npc.ADS_WeaponAccuracyBase = npc.Weapon_Accuracy or 1
 
-    -- Base ground speed for leg slowdown mechanism 1 (m_flGroundSpeed)
-    local baseSpd = npc:GetSaveValue("m_flGroundSpeed")
-    npc.ADS_GroundSpeedBase = (baseSpd and baseSpd > 0) and baseSpd or 1
+    -- Base ground speed for leg slowdown mechanism 1 (m_flGroundSpeed).
+    -- pcall: un addon externo (Lua Patcher) detourea GetSaveValue y su wrapper
+    -- puede fallar en algunas entidades; atrapamos aquí para no gatillar su log.
+    -- El SetSaveValue equivalente (ApplyLimbDebuffs) ya está protegido igual.
+    local okGSV, baseSpd = pcall(function() return npc:GetSaveValue("m_flGroundSpeed") end)
+    npc.ADS_GroundSpeedBase = (okGSV and baseSpd and baseSpd > 0) and baseSpd or 1
     npc.ADS_LegSpeedMult    = 1.0
 
     -- Track HP for universal heal polling
