@@ -17,6 +17,11 @@ local MOVE_MODE    = CreateConVar("ads_scavenger_movement_mode",        "run", F
 local SCAV_DBG     = CreateConVar("ads_scavenger_debug",                "0",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local POST_DROP_CD = CreateConVar("ads_scavenger_post_drop_cooldown",   "8",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local DROP_OWN_T   = CreateConVar("ads_scavenger_drop_ownership_time",  "30",  FCVAR_REPLICATED + FCVAR_ARCHIVE)
+-- Retrieve-own mode: armed NPCs never swap; disarmed NPCs prioritize recovering
+-- their own dropped weapon, falling back to normal scavenging on failure.
+local RETRIEVE_EN  = CreateConVar("ads_scavenger_retrieve_own",         "0",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
+local RETRIEVE_DEL = CreateConVar("ads_scavenger_retrieve_delay",       "2",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
+local RETRIEVE_TO  = CreateConVar("ads_scavenger_retrieve_timeout",     "20",  FCVAR_REPLICATED + FCVAR_ARCHIVE)
 
 local function dprint(...) if SCAV_DBG:GetBool() then print("[ADS Scavenger]", ...) end end
 
@@ -84,6 +89,30 @@ end
 -- Backward-compatible wrapper: no dropper tracking, other NPCs can pick up immediately.
 function ADS.MarkWeaponAsDropped(weapon, permanent)
     ADS.MarkWeaponAsDroppedBy(weapon, nil, permanent)
+end
+
+-- Public: record the weapon an NPC just lost involuntarily (limb-break drop from
+-- ads_limbs) so retrieve-own mode can prioritize it. Always recorded (cheap) but
+-- only CONSUMED when ads_scavenger_retrieve_own is on, so hot-toggling works.
+-- Deliberately NOT folded into MarkWeaponAsDroppedBy: that is also called for
+-- voluntary swaps (EquipWeapon) and death drops, which must not trigger retrieval.
+function ADS.RecordOwnWeaponDrop(npc, weapon, class)
+    if not IsValid(npc) or not npc:IsNPC() then return end
+    npc.ADS_OwnWeaponDrop = {
+        wep   = weapon,  -- entity reference, never EntIndex (indices get recycled)
+        time  = CurTime(),
+        class = class or (IsValid(weapon) and weapon:GetClass()) or "?",
+    }
+    npc.ADS_EverArmed = true  -- it dropped a weapon, so it was armed
+    if RETRIEVE_EN:GetBool() then
+        -- Shorten any pending cooldown (e.g. 8s post-drop) so retrieval starts
+        -- after the configured delay; normal mode timing is left untouched.
+        local wakeAt = CurTime() + RETRIEVE_DEL:GetFloat()
+        if (npc.ADS_NextScavengerCheck or 0) > wakeAt then
+            npc.ADS_NextScavengerCheck = wakeAt
+        end
+    end
+    dprint("own-drop recorded", npc:GetClass(), "->", npc.ADS_OwnWeaponDrop.class)
 end
 
 -- Returns true if the weapon is currently eligible for pickup.
@@ -177,13 +206,14 @@ local function RegisterNPC(npc)
         return
     end
 
-    if FORCE_ALL:GetBool() then
-        npc.ADS_CanScavenge = true
-    else
-        -- Auto-detect: NPCs that spawned with a real weapon are considered "armed by trade"
-        local wep = npc:GetActiveWeapon()
-        npc.ADS_CanScavenge = IsValid(wep) and wep:GetClass() ~= "weapon_nothingfornpc"
-    end
+    -- Auto-detect: NPCs that spawned with a real weapon are considered "armed by trade".
+    -- Always computed (even under force_all): retrieve-own mode uses ADS_EverArmed
+    -- to keep never-armed NPCs from picking anything up.
+    local wep = npc:GetActiveWeapon()
+    local spawnedArmed = IsValid(wep) and wep:GetClass() ~= "weapon_nothingfornpc"
+    npc.ADS_EverArmed = npc.ADS_EverArmed or spawnedArmed
+
+    npc.ADS_CanScavenge = FORCE_ALL:GetBool() or spawnedArmed
 
     npc.ADS_NextScavengerCheck    = 0
     npc.ADS_ScavengerTargetWeapon = nil
@@ -271,8 +301,16 @@ end
 -- Equip weapon
 -- ============================================================
 
+local function HasNoWeapon(npc)
+    local wep = npc:GetActiveWeapon()
+    return not IsValid(wep) or wep:GetClass() == "weapon_nothingfornpc"
+end
+
 local function EquipWeapon(npc, newWeapon)
     if not IsValid(npc) or not IsValid(newWeapon) then return end
+    -- Retrieve-own mode: armed NPCs never swap (covers the one-tick race where the
+    -- NPC got a weapon while en route to a target)
+    if RETRIEVE_EN:GetBool() and not HasNoWeapon(npc) then return end
     local newClass = newWeapon:GetClass()
 
     -- Drop current weapon before equipping new one so it stays in the world
@@ -330,17 +368,13 @@ local function EquipWeapon(npc, newWeapon)
 
     -- Clear target and apply cooldown regardless of equip outcome
     npc.ADS_ScavengerTargetWeapon = nil
+    npc.ADS_OwnWeaponDrop         = nil  -- equipped something: retrieval done or obsolete
     ApplyPostDropCooldown(npc)
 end
 
 -- ============================================================
 -- Find best weapon
 -- ============================================================
-
-local function HasNoWeapon(npc)
-    local wep = npc:GetActiveWeapon()
-    return not IsValid(wep) or wep:GetClass() == "weapon_nothingfornpc"
-end
 
 local function FindBestWeapon(npc)
     if not IsValid(npc) then return nil end
@@ -386,6 +420,53 @@ local function ProcessScavengerNPC(npc)
     -- Combat interrupt gate: unarmed NPCs always bypass; others respect convar
     if IsValid(npc:GetEnemy()) and not INT_COMBAT:GetBool() then
         if not HasNoWeapon(npc) then return end
+    end
+
+    -- ── Retrieve-own mode ─────────────────────────────────────────────────
+    if RETRIEVE_EN:GetBool() then
+        -- Armed NPCs NEVER swap weapons; clear any state inherited from normal mode
+        if not HasNoWeapon(npc) then
+            npc.ADS_ScavengerTargetWeapon = nil
+            npc.ADS_OwnWeaponDrop         = nil
+            return
+        end
+        -- Never-armed NPCs pick nothing up, even under force_all
+        if not npc.ADS_EverArmed then return end
+
+        local drop = npc.ADS_OwnWeaponDrop
+        if drop then
+            -- Floor of 0.25s guarantees the deferred mark (0.05s timer) already ran
+            local delay   = math.max(RETRIEVE_DEL:GetFloat(), 0.25)
+            local elapsed = CurTime() - drop.time
+            if elapsed < delay then return end
+            if elapsed > RETRIEVE_TO:GetFloat() or not IsScavengeable(drop.wep) then
+                -- Gone / taken by someone else / timed out → fall back to normal scavenging
+                dprint("retrieve ABORT", npc:GetClass(), drop.class,
+                       IsScavengeable(drop.wep) and "timeout" or "weapon unavailable")
+                if npc.ADS_ScavengerTargetWeapon == drop.wep then
+                    npc.ADS_ScavengerTargetWeapon = nil
+                end
+                npc.ADS_OwnWeaponDrop = nil
+                -- no return: continue into the normal flow below (FindBestWeapon)
+            else
+                -- Prioritize the NPC's own weapon as a direct target. This deliberately
+                -- bypasses the self-ownership exclusion in FindBestWeapon; IsScavengeable
+                -- does not care who dropped the weapon.
+                if npc.ADS_ScavengerTargetWeapon ~= drop.wep then
+                    npc.ADS_ScavengerTargetWeapon = drop.wep
+                    MoveNPCToWeapon(npc, drop.wep)
+                    npc.ADS_NextMoveReissue = CurTime() + 1.5
+                    dprint("retrieve GO", npc:GetClass(), "->", drop.class)
+                elseif CurTime() > (npc.ADS_NextMoveReissue or 0) then
+                    -- Re-issue movement: combat/flinch from the broken arm cancels schedules
+                    MoveNPCToWeapon(npc, drop.wep)
+                    npc.ADS_NextMoveReissue = CurTime() + 1.5
+                end
+                -- The target-tracking block below handles the equip at pickup distance
+            end
+        end
+        -- No record (or aborted): disarmed NPC that was armed at some point falls
+        -- through to the normal flow; with bestWeight=0 it grabs any scavengeable weapon.
     end
 
     -- If already tracking a target, check it first
@@ -519,6 +600,17 @@ hook.Add("EntityRemoved", "ADS_Scavenger_Cleanup", function(ent)
 end)
 
 -- ============================================================
+-- Ever-armed tracking (retrieve-own mode)
+-- ============================================================
+
+-- Covers NPCs armed after spawn (toolgun, Give, the scavenger itself)
+hook.Add("WeaponEquip", "ADS_Scavenger_EverArmed", function(weapon, owner)
+    if not IsValid(owner) or not owner:IsNPC() then return end
+    if not IsValid(weapon) or weapon:GetClass() == "weapon_nothingfornpc" then return end
+    owner.ADS_EverArmed = true
+end)
+
+-- ============================================================
 -- Console commands (admin-only)
 -- ============================================================
 
@@ -567,20 +659,10 @@ LoadOverrides()
 print(string.format("[ADS Scavenger] Loaded. Weight overrides: %d", table.Count(ADS.ScavengerWeightOverrides)))
 
 -- ============================================================
--- NOTE FOR INTEGRATION WITH ADS LIMBS
+-- INTEGRATION WITH ADS LIMBS
 -- ============================================================
--- To integrate weapon drops from the limb system, add the following
--- call inside TryDropWeapon() in ads_limbs.lua, after a successful drop.
--- Use MarkWeaponAsDroppedBy (not MarkWeaponAsDropped) so the NPC that
--- lost its arm cannot immediately re-scavenge its own weapon:
---
---   if ADS.MarkWeaponAsDroppedBy then
---       ADS.MarkWeaponAsDroppedBy(wep, npc)
---   end
---
--- Place it just after the pcall that calls npc:DropWeapon() succeeds,
--- AND after the fallback world-weapon-spawn block. Both paths should mark.
--- The check "if ADS.MarkWeaponAsDroppedBy then" is safe even if
--- ads_scavenger.lua is not installed.
--- Without this call, a broken-arm NPC will re-pick up its own dropped
--- weapon on the next scavenger tick (Repair 1 won't cover this case).
+-- TryDropWeapon() in ads_limbs.lua marks limb-break drops via
+-- ADS.MarkWeaponAsDroppedBy (ownership window keeps the dropper from
+-- re-picking it in normal mode) and registers them via
+-- ADS.RecordOwnWeaponDrop (consumed by retrieve-own mode). Both calls
+-- are guarded with "if ADS.X then" so limbs works without this file.

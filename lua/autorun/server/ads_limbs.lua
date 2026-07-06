@@ -35,24 +35,45 @@ local function GetBonePos(npc, boneName)
     return (ok and pos) or nil
 end
 
--- Best-effort weapon drop for NPCs
+-- Best-effort weapon drop for NPCs. Returns the world entity left behind (or nil).
+-- Marks the weapon for the scavenger subsystem and records it as the NPC's own
+-- drop (retrieve-own mode). Guards keep limbs working without ads_scavenger.lua.
 local function TryDropWeapon(npc, pos)
     local wep = npc:GetActiveWeapon()
-    if not IsValid(wep) then return end
+    if not IsValid(wep) then return nil end
+    local cls     = wep:GetClass()
     local dropPos = pos or (npc:GetPos() + Vector(0, 0, 32))
+    local dropped = nil
     -- Attempt 1: engine-level drop (exposed for some human NPC types)
     local ok = pcall(function() npc:DropWeapon(wep, dropPos, Vector(0, 0, 50)) end)
-    if not ok then
-        -- Attempt 2: spawn world copy + strip from NPC
-        local cls = wep:GetClass()
+    if ok then
+        dropped = wep
+        -- Deferred mark: the engine clears weapon ownership one tick after the drop
+        -- (same pattern as EquipWeapon in ads_scavenger.lua)
+        timer.Simple(0.05, function()
+            if IsValid(dropped) and not IsValid(dropped:GetOwner())
+               and ADS.MarkWeaponAsDroppedBy then
+                ADS.MarkWeaponAsDroppedBy(dropped, npc)
+            end
+        end)
+    else
+        -- Attempt 2: spawn world copy + strip from NPC (the original is destroyed,
+        -- so the copy is what gets tracked)
         local w = ents.Create(cls)
         if IsValid(w) then
             w:SetPos(dropPos)
             w:Spawn()
             pcall(function() w:PhysWake() end)
+            dropped = w
+            if ADS.MarkWeaponAsDroppedBy then ADS.MarkWeaponAsDroppedBy(w, npc) end
         end
         pcall(function() npc:StripWeapon(cls) end)
     end
+    -- Record for the scavenger's retrieve-own mode
+    if dropped and ADS.RecordOwnWeaponDrop then
+        ADS.RecordOwnWeaponDrop(npc, dropped, cls)
+    end
+    return dropped
 end
 
 -- Apply head stun with dual-path: VJ NPCs use VJ_ACT_PLAYACTIVITY with IsGuard lock,
