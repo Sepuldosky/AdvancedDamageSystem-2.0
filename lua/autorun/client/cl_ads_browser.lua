@@ -1474,8 +1474,23 @@ local AMMO_BUCKET_LABEL = {
     pistol = "Pistol", smg = "SMG", rifle = "Rifle",
     magnum = "Magnum (.357)", shotgun = "Shotgun", sniper = "Sniper",
 }
+local BASE_DISPLAY = {
+    ["All"] = "All", arc9 = "ARC9", arc9_eft = "ARC9 EFT", tfa = "TFA", vj = "VJ", other = "Other",
+}
 local WPP_MIN, WPP_MAX = 1, 115
 local WAD_MIN, WAD_MAX = 1, 120
+
+-- Estiliza un DSlider manual: dibuja track + fill visibles. El skin base no los
+-- muestra con contraste suficiente sobre el fondo oscuro de ADS Configuration.
+local function StyleManualSlider(slider)
+    slider.Paint = function(self, w, h)
+        local midY = math.floor(h / 2)
+        surface.SetDrawColor(60, 60, 60, 255)
+        surface.DrawRect(0, midY - 2, w, 4)
+        surface.SetDrawColor(150, 140, 90, 255)
+        surface.DrawRect(0, midY - 2, self:GetSlideX() * w, 4)
+    end
+end
 
 ADS_Browser.CuratedWeapons    = {}   -- [classname] = {penPower, armorDamage, penChanceBase}
 ADS_Browser.AmmoFallback      = {}   -- [bucket] = {...} -- live, viene del server
@@ -1489,7 +1504,8 @@ local function BuildWeaponsCatalog()
         local cls = wep.ClassName
         if cls and cls ~= "" then
             local base = "other"
-            if weapons.IsBasedOn(cls, "arc9_base") then base = "arc9"
+            if string.find(cls, "arc9_eft_", 1, true) then base = "arc9_eft"
+            elseif weapons.IsBasedOn(cls, "arc9_base") then base = "arc9"
             elseif weapons.IsBasedOn(cls, "weapon_vj_base") then base = "vj"
             elseif string.find(cls, "tfa_", 1, true) then base = "tfa"
             end
@@ -1524,8 +1540,8 @@ local function BuildWeaponsTab(parent)
     local baseCombo = vgui.Create("DComboBox", filterRow)
     baseCombo:Dock(RIGHT) baseCombo:SetWide(90)
     baseCombo:SetValue("All")
-    for _, b in ipairs({"All", "arc9", "tfa", "vj", "other"}) do
-        baseCombo:AddChoice(b == "All" and "All" or b:upper(), b, b == "All")
+    for _, b in ipairs({"All", "arc9_eft", "arc9", "tfa", "vj", "other"}) do
+        baseCombo:AddChoice(BASE_DISPLAY[b] or b, b, b == "All")
     end
 
     -- ── List ──────────────────────────────────────────────────────────────────
@@ -1555,6 +1571,7 @@ local function BuildWeaponsTab(parent)
         e:Dock(RIGHT) e:SetWide(40)
         local s = vgui.Create("DSlider", row)
         s:Dock(FILL)
+        StyleManualSlider(s)
         return e, s
     end
 
@@ -1596,25 +1613,32 @@ local function BuildWeaponsTab(parent)
     resetBtn:Dock(LEFT) resetBtn:DockMargin(4, 0, 0, 0) resetBtn:SetWide(140)
     resetBtn:SetText("Reset to Fallback")
 
+    -- Resuelve los valores que se mostrarían para una clase (curated ?? ammo fallback).
+    -- Usado por loadWeapon (arma en edición) y por el combo "Copy values from".
+    local function ResolveWeaponValues(cls, data)
+        local curated = ADS_Browser.CuratedWeapons[cls]
+        if curated then return curated, true end
+        local bucket = data and data.ammo and (CLIENT_AMMO_ALIAS[data.ammo] or CLIENT_AMMO_ALIAS[string.lower(data.ammo)])
+        local fb = (bucket and ADS_Browser.AmmoFallback[bucket]) or ADS_Browser.AmmoFallback.pistol or CLIENT_AMMO_DEFAULTS.pistol
+        return fb, false
+    end
+
     local function loadWeapon(cls, data)
         selectedClass = cls
         editorTitle:SetText((data.name or cls) .. "  (" .. cls .. ")")
 
-        local curated = ADS_Browser.CuratedWeapons[cls]
-        local bucket  = data.ammo and (CLIENT_AMMO_ALIAS[data.ammo] or CLIENT_AMMO_ALIAS[string.lower(data.ammo)])
-        local fb      = (bucket and ADS_Browser.AmmoFallback[bucket]) or ADS_Browser.AmmoFallback.pistol or CLIENT_AMMO_DEFAULTS.pistol
-        local values  = curated or fb
-
+        local values, isCurated = ResolveWeaponValues(cls, data)
         ppSetValue(values.penPower)
         adSetValue(values.armorDamage)
         pcSetValue(values.penChanceBase)
         setEditorEnabled(true)
 
-        if data.base == "arc9" then
+        if data.base == "arc9" or data.base == "arc9_eft" then
             noteLabel:SetText("ARC9 weapon: if the equipped round carries live EFT data, EFT values win over this entry. This only applies when the round has no EFT data.")
-        elseif curated then
+        elseif isCurated then
             noteLabel:SetText("Curated entry active.")
         else
+            local bucket = data.ammo and (CLIENT_AMMO_ALIAS[data.ammo] or CLIENT_AMMO_ALIAS[string.lower(data.ammo)])
             noteLabel:SetText("No curated entry -- showing ammo fallback bucket: "
                 .. (AMMO_BUCKET_LABEL[bucket] or "Pistol") .. ". Press Save to curate this weapon specifically.")
         end
@@ -1640,6 +1664,42 @@ local function BuildWeaponsTab(parent)
         net.SendToServer()
     end
 
+    -- ── Copy values from another weapon (client-side, no persiste hasta Save) ──
+    local copyRow = vgui.Create("DPanel", parent)
+    copyRow:Dock(TOP) copyRow:SetTall(20) copyRow:DockMargin(4, 0, 4, 4)
+    copyRow.Paint = function() end
+    local copyLabel = vgui.Create("DLabel", copyRow)
+    copyLabel:Dock(LEFT) copyLabel:SetWide(110) copyLabel:SetText("Copy values from:")
+    copyLabel:SetFont("DermaDefault")
+    local copyCombo = vgui.Create("DComboBox", copyRow)
+    copyCombo:Dock(FILL)
+    copyCombo:SetValue("Select a weapon...")
+
+    -- Poblado desde renderList con las clases que pasan el filtro actual (search+base).
+    local function rebuildCopyCombo(visibleClasses)
+        copyCombo:Clear()
+        copyCombo:SetValue("Select a weapon...")
+        for _, cls in ipairs(visibleClasses) do
+            local data = ADS_Browser.WeaponsCatalog[cls]
+            if data then
+                copyCombo:AddChoice((data.name or cls) .. " [" .. cls .. "]", cls)
+            end
+        end
+    end
+
+    copyCombo.OnSelect = function(_, _, _, cls)
+        if not selectedClass then return end
+        local data = ADS_Browser.WeaponsCatalog[cls]
+        if not data then return end
+        local values = ResolveWeaponValues(cls, data)
+        ppSetValue(values.penPower)
+        adSetValue(values.armorDamage)
+        pcSetValue(values.penChanceBase)
+        -- No pisa selectedClass: los valores quedan cargados en el editor de la clase
+        -- ya abierta. Save persiste en ESA clase, no en la fuente copiada.
+        copyCombo:SetValue("Select a weapon...")
+    end
+
     -- ── Render list ───────────────────────────────────────────────────────────
     local function renderList()
         listScroll:Clear()
@@ -1648,12 +1708,14 @@ local function BuildWeaponsTab(parent)
         local names = {}
         for cls in pairs(cat) do table.insert(names, cls) end
         table.sort(names)
+        local visible = {}
 
         for _, cls in ipairs(names) do
             local data = cat[cls]
             if (baseFilter == "All" or data.base == baseFilter)
                and (search == "" or string.find(string.lower(data.name), search, 1, true)
                                   or string.find(string.lower(cls), search, 1, true)) then
+                table.insert(visible, cls)
                 local row = vgui.Create("DButton", listScroll)
                 row:Dock(TOP) row:SetTall(22) row:DockMargin(0, 1, 0, 0)
                 row:SetText("")
@@ -1670,7 +1732,7 @@ local function BuildWeaponsTab(parent)
                     surface.SetFont("DermaDefault")
                     surface.SetTextColor(220, 220, 220, 255)
                     surface.SetTextPos(4, 4)
-                    surface.DrawText((data.name or cls) .. "  [" .. cls .. "]  (" .. data.base:upper() .. ")")
+                    surface.DrawText((data.name or cls) .. "  [" .. cls .. "]  (" .. (BASE_DISPLAY[data.base] or data.base:upper()) .. ")")
                     surface.SetTextColor(badgeColor.r, badgeColor.g, badgeColor.b, 255)
                     surface.SetTextPos(w - 60, 4)
                     surface.DrawText(badge)
@@ -1678,6 +1740,7 @@ local function BuildWeaponsTab(parent)
                 row.DoClick = function() loadWeapon(cls, data) end
             end
         end
+        rebuildCopyCombo(visible)
     end
 
     searchBox.OnChange = renderList
@@ -1722,6 +1785,7 @@ local function BuildWeaponsTab(parent)
             e:Dock(RIGHT) e:SetWide(40)
             local s = vgui.Create("DSlider", r)
             s:Dock(FILL)
+            StyleManualSlider(s)
             return e, s
         end
 
