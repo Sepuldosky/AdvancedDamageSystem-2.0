@@ -5,7 +5,7 @@
 > secciones ni historial). El historial vive en `git` + [`CHANGELOG.md`](CHANGELOG.md).
 > Si crece de una pantalla, está mal redactado: recortar.
 
-**Última actualización:** 2026-07-04
+**Última actualización:** 2026-07-06
 
 ---
 
@@ -26,10 +26,17 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
   `InitArmorNWvars` idempotente.
 - **Data model:** JSON `data/ads/ads_config.json` con `{whitelist, blacklist, armor,
   curated_weapons, ammo_fallback}`.
-- **`ads_limbs`:** drop de arma solo en `HITGROUP_RIGHTARM`.
-- **Browser "ADS Configuration"** (`cl_ads_browser.lua`): 4 tabs
-  (Armor silueta clickeable / Limbs-WL / Weapons / General), modelo de template,
-  Copy Selected, doble-click, batch apply.
+- **`ads_limbs`:** drop de arma al vaciarse el pool de **cualquier brazo** (L o R);
+  el drop marca el arma para el scavenger (`MarkWeaponAsDroppedBy` +
+  `RecordOwnWeaponDrop`).
+- **`ads_scavenger`:** pesos auto (DPS o slot-fallback) + overrides por classname
+  (JSON propio); **modo "recuperar arma propia"** (`ads_scavenger_retrieve_own`):
+  armado nunca cambia de arma, desarmado prioriza la suya (delay/timeout convars) y
+  cae al scavenger normal si falla; nunca-armados no recogen nada en ese modo.
+- **Browser "ADS Configuration"** (`cl_ads_browser.lua`): 5 tabs
+  (Armor silueta clickeable / Limbs-WL / Weapons / Scavenger / General), modelo de
+  template, Copy Selected, doble-click, batch apply. Tab Scavenger edita los
+  overrides de peso (contrato net propio, admin-gated).
 - **Toolgun** (`ads_config.lua`): debug puro per-entity (M1/M2/Reload), no toca el JSON.
 - **Block 7 — Weapon Penetration Modifier:** tabla curada abierta a cualquier base,
   Ammo Fallback editable (6 buckets), tab Weapons, contrato de red completo. **Código
@@ -41,6 +48,11 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
   (`path=stash` del detour vs. `path=inline_arc9`) cuando un NPC (scavenger /
   `arc9_givenpcweapon`) dispara ARC9. El código cubre ambos; falta la confirmación real
   con `ads_debug 3`. Ver §18 (caso borde abierto) del doc de arquitectura.
+- **Sesión Scavenger (3 parches `[PENDIENTE]` en CHANGELOG):** recuperación feliz
+  (VJ + nativo), fallback por arma tomada/timeout, no-upgrade armado, nunca-armados
+  con `force_all 1`, y tab Scavenger (set/remove/eco). Con `ads_scavenger_debug 1`.
+  Efecto colateral a confirmar en modo normal: armas de brazo roto ahora scavengeables
+  por otros NPCs (dueño bloqueado 30 s).
 
 ## Remanentes / deuda conocida
 

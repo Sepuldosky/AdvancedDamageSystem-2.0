@@ -56,6 +56,37 @@ tab Weapons + fallback inline `inline_arc9`. Detalle: arquitectura §18.
 
 ---
 
+## PARCHES DE sesión Scavenger — Retrieve Own Weapon + UI de pesos — 2026-07-06
+
+Sesión de diseño: modo "recuperar arma propia" (toggle) para el scavenger + cierre del
+gap de integración limbs↔scavenger + pestaña Scavenger en el browser para editar los
+overrides de peso por classname (antes solo por concommand).
+
+- PARCHE 1 — Integración limbs↔scavenger: `TryDropWeapon` (`ads_limbs.lua`) ahora marca
+  el arma dropeada con `ADS.MarkWeaponAsDroppedBy` (ambos intentos: drop real y copia)
+  y la registra con `ADS.RecordOwnWeaponDrop`; devuelve la entidad dropeada. Cumple la
+  nota de integración que estaba pendiente al final de `ads_scavenger.lua`.
+  **[PENDIENTE]** — verificar en juego (efecto colateral esperado en modo normal: armas
+  de brazo roto pasan a ser scavengeables por otros NPCs; dueño bloqueado 30s).
+
+- PARCHE 2 — Modo "recuperar arma propia" (`ads_scavenger.lua`): convars
+  `ads_scavenger_retrieve_own` (0), `_retrieve_delay` (2 s), `_retrieve_timeout` (20 s,
+  cuenta desde el drop). Con el modo activo: NPC armado nunca cambia de arma; NPC
+  desarmado prioriza recuperar SU arma (registro `ADS_OwnWeaponDrop` con referencia de
+  entidad, reemisión de movimiento cada 1.5 s); si falla (tomada/desaparecida/timeout)
+  cae al scavenger normal; NPC que nunca tuvo arma (`ADS_EverArmed`) no recoge nada ni
+  con `force_all`. `RecordOwnWeaponDrop` acorta el cooldown post-drop pendiente solo en
+  este modo. Toggle + sliders en el panel Scavenger de `cl_ads.lua`. **[PENDIENTE]**
+
+- PARCHE 3 — UI de pesos del scavenger: 3 net strings nuevos en `ads_core.lua`
+  (`ads_request_scav_weights` / `ads_scav_weights_data` / `ads_save_scav_weight`, con
+  flag `remove` explícito porque peso 0 es legítimo), `ADS.ClearWeaponWeight` público +
+  handlers admin-gated en `ads_scavenger.lua` (eco tras guardar), pestaña "Scavenger"
+  en `cl_ads_browser.lua` (lista con badge W=/Auto, filtro Overridden only, estimación
+  cliente del peso auto, entrada manual de classname server-only). **[PENDIENTE]**
+
+---
+
 ## PARCHES DE sesión Metodología de trabajo — 2026-07-04
 
 Portación de la forma de trabajar de Kontrol a ADS: docs vivos (estado/rumbo/changelog)
