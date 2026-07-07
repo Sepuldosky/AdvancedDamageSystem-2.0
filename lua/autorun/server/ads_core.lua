@@ -12,6 +12,13 @@ local HELMET = CreateConVar("ads_helmet_mult",   "0.5", FCVAR_REPLICATED + FCVAR
 local SND_EN = CreateConVar("ads_sound_enabled", "1",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local GSB_EN = CreateConVar("ads_gunshotblocked_enabled", "1", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local HS_EN  = CreateConVar("ads_headshot_sound_enabled", "1", FCVAR_REPLICATED + FCVAR_ARCHIVE)
+-- Block FX: feedback visual cuando la armadura BLOQUEA (factorPenleft == 0)
+local BLK_NB  = CreateConVar("ads_block_noblood_enabled", "1", FCVAR_REPLICATED + FCVAR_ARCHIVE,
+    "Suprime la sangre (engine / VJ / Visceral) del hit bloqueado por armadura")
+local BLK_SPK = CreateConVar("ads_block_spark_enabled",   "1", FCVAR_REPLICATED + FCVAR_ARCHIVE,
+    "Chispa metalica en el punto de impacto bloqueado")
+local BLK_DCL = CreateConVar("ads_block_decal_enabled",   "1", FCVAR_REPLICATED + FCVAR_ARCHIVE,
+    "Decal de impacto metalico encima del gunshot al bloquear")
 local EN_NPC = CreateConVar("ads_enabled_npc",   "1",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local EN_PLY = CreateConVar("ads_enabled_ply",   "1",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local LM_H   = CreateConVar("ads_limb_mult_head","1.0", FCVAR_REPLICATED + FCVAR_ARCHIVE)
@@ -590,6 +597,94 @@ local function PlayArmorSounds(npc, hg, material, blocked, dur)
 end
 
 
+-- ── Block FX: feedback visual de impacto BLOQUEADO ──────────────────────────
+-- Se llama DENTRO de ScaleNPCDamage (corre dentro de CAI_BaseNPC::TraceAttack,
+-- ANTES de que el engine lea BloodColor() y llame SpawnBlood/TraceBleed) → poner
+-- DONT_BLEED acá suprime la sangre de ESTE hit. No se puede restaurar en el
+-- mismo hook (la sangre se decide después de retornar): restore en timer.Simple(0).
+-- hitPos/hitNormal: trace real del detour ARC9 (path stash); nil en paths inline
+-- → fallback a dmginfo. La normal apunta HACIA AFUERA de la superficie.
+function ADS.ApplyBlockedHitFX(npc, di, hg, hitPos, hitNormal)
+    -- token per-hit: lo consumen el detour de Visceral y el hook de ragdoll
+    npc.ADS_BlockedHitToken = FrameNumber()
+
+    -- posición / normal del impacto
+    local pos = hitPos or di:GetDamagePosition()
+    local nrm = hitNormal
+    if not nrm then
+        local f = di:GetDamageForce()
+        -- la fuerza apunta HACIA la superficie → invertir
+        nrm = f:LengthSqr() > 0 and -f:GetNormalized() or vector_up
+    end
+    -- daños exóticos pueden traer posición cero: degradar al centro del NPC
+    if pos:IsZero() then pos = npc:WorldSpaceCenter() end
+
+    -- 1) supresión de sangre de este hit (engine + sangre propia de VJ)
+    if BLK_NB:GetBool() and npc.ADS_BlockFXStash == nil then  -- guard anti-doble-stash
+        local stash = { bloodColor = npc:GetBloodColor() }
+        if npc.IsVJBaseSNPC then
+            -- VJ spawnea su PROPIA sangre en OnTakeDamage (DoBleed), gateada por
+            -- self.Bleeds y SIN consultar GetBloodColor → DONT_BLEED no le basta.
+            -- OnTakeDamage de VJ corre después de este hook y antes del timer(0).
+            stash.vjHad    = true
+            stash.vjBleeds = npc.Bleeds  -- puede ser false de fábrica (vj_npc_blood 0)
+            npc.Bleeds     = false
+        end
+        npc.ADS_BlockFXStash = stash
+        npc:SetBloodColor(DONT_BLEED)
+        timer.Simple(0, function()
+            if not IsValid(npc) then return end
+            local s = npc.ADS_BlockFXStash
+            if not s then return end  -- ClearBlockedHitFX ya restauró (ráfaga mixta)
+            npc:SetBloodColor(s.bloodColor)
+            if s.vjHad then npc.Bleeds = s.vjBleeds end
+            npc.ADS_BlockFXStash = nil
+        end)
+    end
+
+    -- 2) chispa metálica en el punto de impacto
+    if BLK_SPK:GetBool() then
+        local ed = EffectData()
+        ed:SetOrigin(pos)
+        ed:SetNormal(nrm)
+        ed:SetMagnitude(1)
+        ed:SetScale(1)
+        util.Effect("MetalSpark", ed)
+    end
+
+    -- 3) decal metálico ENCIMA del gunshot de flesh (util.Decal es networked y
+    --    llega al cliente DESPUÉS del impact effect → pinta encima). Si no cubre,
+    --    degradación aceptada: queda el de flesh.
+    -- OJO: el 4º arg de util.Decal es el FILTRO del trace (entidades a ignorar),
+    -- no el objetivo — pasar el npc ahí impedía pintar sobre él.
+    if BLK_DCL:GetBool() then
+        util.Decal("ADS_Ricochet", pos + nrm * 4, pos - nrm * 4)
+    end
+
+    if DBG:GetInt() >= 2 and _dbgPass(npc) then
+        dprint(2, string.format("blockfx apply  %s hg=%d  src=%s%s",
+            npc:GetClass(), hg, hitPos and "trace" or "dmginfo",
+            (npc.IsVJBaseSNPC and "  vj_bleeds_off" or "")))
+    end
+end
+
+-- Rama PENETRADA: restaurar YA (mismo frame — el perdigón que penetra debe
+-- sangrar) y limpiar el token para que el detour Visceral (que corre después,
+-- con el daño agregado) no suprima la sangre de una ráfaga mixta.
+function ADS.ClearBlockedHitFX(npc)
+    npc.ADS_BlockedHitToken = nil
+    local s = npc.ADS_BlockFXStash
+    if s then
+        npc:SetBloodColor(s.bloodColor)
+        if s.vjHad then npc.Bleeds = s.vjBleeds end
+        npc.ADS_BlockFXStash = nil  -- el timer pendiente ve nil → no-op
+        if DBG:GetInt() >= 2 and _dbgPass(npc) then
+            dprint(2, "blockfx clear (pen tras bloqueo, mismo tick)  " .. npc:GetClass())
+        end
+    end
+end
+
+
 -- Hitgroup index -> readable name, used by debug trace
 local _HG_NAME = {
     [HITGROUP_HEAD]     = "head",    [HITGROUP_CHEST]   = "chest",
@@ -631,6 +726,11 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
                         npc:SetNWInt("ADS_Armor_Dur_" .. stash.durKey, stash.newDur)
                     end
                     PlayArmorSounds(npc, hg, stash.material, not stash.penetra, stash.newDur)
+                    if stash.penetra then
+                        ADS.ClearBlockedHitFX(npc)
+                    else
+                        ADS.ApplyBlockedHitFX(npc, di, hg, stash.hitPos, stash.hitNormal)
+                    end
                 end
                 -- debug: read enriched stash fields deposited by the ARC9 detour
                 armorPath   = "stash"
@@ -653,6 +753,11 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
                     di:SetDamage(res.fleshDmg)
                     npc:SetNWInt("ADS_Armor_Dur_" .. zona.durKey, res.newDur)
                     PlayArmorSounds(npc, hg, zona.material, res.factorPenleft == 0, zona.durActual)
+                    if res.factorPenleft == 0 then
+                        ADS.ApplyBlockedHitFX(npc, di, hg, nil, nil)  -- sin trace: cae a dmginfo
+                    else
+                        ADS.ClearBlockedHitFX(npc)
+                    end
                     armorPath   = "inline_arc9"
                     armorSrc    = tuple.source  or "-"
                     armorPen    = (res.factorPenleft > 0)
@@ -678,6 +783,11 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
                 di:SetDamage(res.fleshDmg)
                 npc:SetNWInt("ADS_Armor_Dur_" .. zona.durKey, res.newDur)
                 PlayArmorSounds(npc, hg, zona.material, res.factorPenleft == 0, zona.durActual)
+                if res.factorPenleft == 0 then
+                    ADS.ApplyBlockedHitFX(npc, di, hg, nil, nil)  -- sin trace: cae a dmginfo
+                else
+                    ADS.ClearBlockedHitFX(npc)
+                end
                 -- debug: inline resolve
                 armorPath   = "inline"
                 armorSrc    = tuple.source  or "-"
@@ -1139,6 +1249,9 @@ hook.Add("InitPostEntity", "ADS_ARC9_Compat", function()
                     durKey     = zona.durKey,
                     material   = zona.material,   -- lo consume PlayArmorSounds (clang por material)
                     frame      = FrameNumber(),
+                    -- Block FX: trace real del impacto (los paths inline no lo tienen)
+                    hitPos     = tr.HitPos,
+                    hitNormal  = tr.HitNormal,    -- apunta HACIA AFUERA de la superficie
                     -- debug fields (consumed by ScaleNPCDamage trace only)
                     penetra    = (res.factorPenleft > 0),
                     armorClass = zona.clase,
@@ -1169,4 +1282,50 @@ hook.Add("InitPostEntity", "ADS_ARC9_Compat", function()
     end
 
     print("[ADS] ARC9 AfterShotFunction armor detour installed")
+end)
+
+
+-- ── Compat "Visceral Dynamic Blood base" (repack de zippy/NGBR animated blood) ──
+-- Integración SIN dependencia: si el addon no está montado, este bloque es no-op.
+-- Su hook EntityTakeDamage delega en métodos de metatable per-hit → detour con
+-- early-return cuando el hit fue BLOQUEADO por ADS (token fresco, ≤1 frame).
+-- Imprescindible además del DONT_BLEED: su gate hasRedBlood() bypasea el blood
+-- color en NPCs VJ (IsVJBaseSNPC + BloodColor=="Red" / CustomBlood_Decal).
+-- NO tocar su hook EntityFireBullets (retorna true y se re-lanza a sí mismo con
+-- una flag interna; interferir rompe su captura de HitPos).
+hook.Add("InitPostEntity", "ADS_AnimBlood_Compat", function()
+    if ANIMATED_SPLATTER_EFFECT == nil then return end  -- addon ausente → no-op
+
+    local ENTMETA = FindMetaTable("Entity")
+    local n = 0
+    for _, name in ipairs({ "RealisticBlood_BulletDamage",
+                            "RealisticBlood_OtherDamage",
+                            "RealisticBlood_PhysDamage" }) do
+        local orig = ENTMETA[name]
+        if orig then
+            ENTMETA[name] = function(self, ...)
+                local tok = self.ADS_BlockedHitToken
+                if tok and BLK_NB:GetBool() and (FrameNumber() - tok) <= 1 then
+                    if DBG:GetInt() >= 2 and _dbgPass(self) then
+                        dprint(2, "blockfx visceral-suppress " .. name .. "  " .. self:GetClass())
+                    end
+                    return  -- hit bloqueado por armadura: sin FX de sangre visceral
+                end
+                return orig(self, ...)
+            end
+            n = n + 1
+        end
+    end
+
+    -- Visceral RE-ejecuta el último daño sobre el ragdoll de muerte
+    -- (CreateEntityRagdoll_RealisticBlood + RealisticBlood_LastDMGINFO). Si el
+    -- hit letal fue bloqueado, propagar el token al rag para gatear también ahí.
+    hook.Add("CreateEntityRagdoll", "ADS_AnimBlood_RagdollToken", function(own, rag)
+        local tok = own.ADS_BlockedHitToken
+        if tok and (FrameNumber() - tok) <= 1 and IsValid(rag) then
+            rag.ADS_BlockedHitToken = tok
+        end
+    end)
+
+    print("[ADS] Visceral/Animated Blood detectado: supresion por bloqueo instalada (" .. n .. " metodos)")
 end)
