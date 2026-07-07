@@ -76,11 +76,22 @@ local function TryDropWeapon(npc, pos)
     return dropped
 end
 
--- Apply head stun with dual-path: VJ NPCs use VJ_ACT_PLAYACTIVITY with IsGuard lock,
--- native NPCs check model activity support first to avoid T-pose on unsupported models.
+-- Apply head stun with dual-path:
+--  · VJ NPCs: se fuerza el flinch NATIVO de VJ marcando el dmginfo con
+--    VJ.DMG_FORCE_FLINCH (llamada a método del userdata, no inyección de campo —
+--    respeta el contrato de CLAUDE.md). VJ lo consume en su OnTakeDamage →
+--    ENT:Flinch() y reproduce la animación correcta para el modelo
+--    (FlinchHitGroupMap / AnimTbl_Flinch) con lockAnim: bloquea schedule, ataques
+--    y movimiento durante la animación. La duración la manda la animación, no las
+--    convars ads_limb_head_stun_* (esas quedan solo para NPCs nativos).
+--    El camino previo (IsGuard + StopMoving + VJ_ACT_PLAYACTIVITY(ACT_*_FLINCH))
+--    no interrumpía el schedule en curso (IsGuard solo afecta la PRÓXIMA selección
+--    de schedule) y fallaba mudo si el modelo no tenía esa activity.
+--  · Native NPCs: check model activity support first to avoid T-pose on
+--    unsupported models.
 -- isSevere=true → 25% threshold (big flinch), false → 50% threshold (small flinch).
--- Timer key is shared so 25% stun always cancels any active 50% stun.
-local function ApplyHeadStun(npc, isSevere)
+-- Native: shared timer key so 25% stun always cancels any active 50% stun.
+local function ApplyHeadStun(npc, isSevere, dmginfo)
     if not IsValid(npc) then return end
     local stunKey = "ads_limb_stun_" .. npc:EntIndex()
     timer.Remove(stunKey)
@@ -88,26 +99,31 @@ local function ApplyHeadStun(npc, isSevere)
     local dur = isSevere and STN25_DUR:GetFloat() or STN50_DUR:GetFloat()
 
     if npc.IsVJBaseSNPC then
-        -- VJ path: use VJ_ACT_PLAYACTIVITY with lockAnim=true to block AI during stun
-        local prevGuard = npc.IsGuard
-        npc.IsGuard = true
-        pcall(function() npc:StopMoving() end)
-
-        pcall(function()
-            npc:VJ_ACT_PLAYACTIVITY(
-                isSevere and ACT_BIG_FLINCH or ACT_SMALL_FLINCH,
-                true,   -- lockAnim: blocks AI during animation
-                dur,    -- lockAnimTime: duration of lock
-                false   -- faceEnemy: no rotation needed
-            )
-        end)
-
-        timer.Create(stunKey, dur, 1, function()
-            if not IsValid(npc) then return end
-            npc.IsGuard = prevGuard
-        end)
-
-        dprint(2, "event", npc:GetClass(), "stun_vj " .. (isSevere and "25" or "50") .. " dur=" .. dur)
+        -- Solo forzable dentro del pipeline de daño (spawn/heal no traen dmginfo)
+        if not dmginfo then return end
+        -- Habilitar flinch si el autor del NPC lo dejó apagado (default: false).
+        -- FlinchChance enorme: el roll aleatorio (math.random(1, N)) queda inerte;
+        -- DMG_FORCE_FLINCH lo bypassa, así que solo dispara el flinch de ADS.
+        if not npc.CanFlinch then
+            npc.CanFlinch    = true
+            npc.FlinchChance = 1e9
+        end
+        -- Flinch() chequea cooldown y lock ANTES del bypass de FORCE_FLINCH
+        -- (vj_base/ai/core.lua L2598): limpiar el cooldown para que el stun por
+        -- umbral nunca se trague.
+        npc.NextFlinchT = 0
+        if isSevere then
+            -- 25% pisa a un flinch/lock activo (paridad con el diseño previo)
+            npc.Flinching    = false
+            npc.AnimLockTime = 0
+        end
+        -- No pisar un DamageCustom ajeno (p. ej. DMG_BLEED de armas VJ)
+        if VJ and VJ.DMG_FORCE_FLINCH and dmginfo:GetDamageCustom() == 0 then
+            dmginfo:SetDamageCustom(VJ.DMG_FORCE_FLINCH)
+            dprint(2, "event", npc:GetClass(), "stun_vj_flinch " .. (isSevere and "25" or "50"))
+        else
+            dprint(2, "event", npc:GetClass(), "stun_vj_skip (DamageCustom ocupado o VJ ausente)")
+        end
         return
     end
 
@@ -145,7 +161,9 @@ end
 
 -- Central debuff application. Called after every pool change.
 -- reason: "spawn" | "damage" | "heal"
-local function ApplyLimbDebuffs(npc, reason)
+-- dmginfo: solo presente con reason="damage" (desde ProcessLimbHit); habilita el
+-- stun VJ por flinch forzado. Los paths spawn/heal no stunean (correcto: sin daño).
+local function ApplyLimbDebuffs(npc, reason, dmginfo)
     if not IsValid(npc) then return end
     if not npc.ADS_HP_HeadMax then return end  -- not initialized
 
@@ -204,14 +222,14 @@ local function ApplyLimbDebuffs(npc, reason)
     if r_head < 0.25 and not npc.ADS_HeadStun25_Fired then
         npc.ADS_HeadStun25_Fired = true
         npc.ADS_HeadStun50_Fired = true  -- prevent separate 50% fire
-        ApplyHeadStun(npc, true)
+        ApplyHeadStun(npc, true, dmginfo)
     end
     if r_head >= 0.25 then npc.ADS_HeadStun25_Fired = false end
 
     -- One-shot: head stun 50%
     if r_head < 0.5 and not npc.ADS_HeadStun50_Fired then
         npc.ADS_HeadStun50_Fired = true
-        ApplyHeadStun(npc, false)
+        ApplyHeadStun(npc, false, dmginfo)
     end
     if r_head >= 0.5 then npc.ADS_HeadStun50_Fired = false end
 
@@ -348,7 +366,7 @@ function ADS.ProcessLimbHit(npc, hitgroup, dmginfo)
         if IsValid(npc) then npc.ADS_LastKnownHP = npc:Health() end
     end)
 
-    ApplyLimbDebuffs(npc, "damage")
+    ApplyLimbDebuffs(npc, "damage", dmginfo)
 end
 
 -- Public healing API for external integration (medic mods, etc.)
@@ -465,8 +483,6 @@ hook.Add("WeaponEquip", "ADS_Limbs_ResetDropFlags", function(weapon, owner)
     dprint(2, "equip_reset", owner:GetClass(), weapon:GetClass())
 end)
 
--- TODO: if VJ stuns don't block shooting sufficiently with VJ_ACT_PLAYACTIVITY,
--- add a recurring Think hook that for stun duration calls:
---   npc:StopMoving()
---   npc:ClearEnemyMemory()
--- Activate via npc.ADS_StunActive = true at stun start, false at end.
+-- Nota VJ: el stun de cabeza en NPCs VJ va por el flinch nativo de VJ
+-- (DMG_FORCE_FLINCH en ApplyHeadStun); Flinch() ya hace StopAttacks + lockAnim,
+-- no hace falta scaffolding externo (IsGuard/StopMoving eran ineficaces).
