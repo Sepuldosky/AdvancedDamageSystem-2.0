@@ -47,6 +47,13 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
   GunshotBlocked*`; cabeza blindada → `HeadshotHard` (bloquea) / `HeadshotLight`
   (penetra), reemplaza al sonido de bloqueo. Toggles `ads_sound_enabled` /
   `ads_gunshotblocked_enabled` / `ads_headshot_sound_enabled`.
+- **Block FX** (`ads_core.lua` `ApplyBlockedHitFX`/`ClearBlockedHitFX`, verificado
+  2026-07-07): bloqueo de armadura suprime la sangre del hit (engine vía
+  `DONT_BLEED`+restore, VJ vía `Bleeds=false` per-hit, Visceral/Animated Blood vía
+  detour de metatable con token `ADS_BlockedHitToken` — compat sin dependencia,
+  gateada por `ANIMATED_SPLATTER_EFFECT`) + chispa `MetalSpark`. Toggles
+  `ads_block_noblood_enabled` / `ads_block_spark_enabled` / `ads_block_decal_enabled`
+  (este último inerte en la práctica — ver deuda).
 - **Block 7 — Weapon Penetration Modifier:** tabla curada abierta a cualquier base,
   Ammo Fallback editable (6 buckets), tab Weapons, contrato de red completo. **Código
   aplicado** (presente en `ads_armor.lua` / `ads_core.lua` / `cl_ads_browser.lua`).
@@ -77,6 +84,12 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
 
 ## Remanentes / deuda conocida
 
+- **Block FX — decal overlay inerte:** el decal `ADS_Ricochet` (registro en
+  `ads_shared.lua`, rama 3 de `ApplyBlockedHitFX`) no llega a verse sobre el modelo
+  del NPC aun tras corregir el filtro de `util.Decal` — el gunshot de flesh queda
+  visible en bloqueos. Aceptado por el autor (2026-07-07); candidatos si se retoma:
+  decal built-in `Impact.Metal`, un solo material grande (`shot5_subrect`), o
+  aplicar client-side con `util.DecalEx` vía net message.
 - **`MakeSlider` del tab Limbs/WL** (`cl_ads_browser.lua`, ~L1246) sigue usando
   `DNumSlider` — no migrado al patrón de fila manual (`durRow`/`durEntry`/`durSlider`)
   que ya usan Armor tab, toolgun y Weapons tab. No confirmado si colapsa en runtime.

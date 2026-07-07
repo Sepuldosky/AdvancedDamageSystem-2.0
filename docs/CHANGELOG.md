@@ -56,6 +56,61 @@ tab Weapons + fallback inline `inline_arc9`. Detalle: arquitectura §18.
 
 ---
 
+## PARCHES DE sesión Block FX — feedback visual de bloqueo — 2026-07-07
+
+Sesión de diseño: cuando la armadura zonal BLOQUEA un balazo (invariante
+`factorPenleft == 0`), el hit debe LEERSE como bloqueo: sin sangre (engine, VJ y
+addon Visceral Dynamic Blood base si está montado — integración sin dependencia,
+workshop 3652351390, repack de zippy/NGBR "animated blood"), chispa metálica
+(`MetalSpark`) y decal de impacto metálico pintado ENCIMA del gunshot de flesh
+(sin `RemoveAllDecals` — rechazado por parpadeo/borrado total; si el overlay no
+cubre, queda el decal de flesh). Si penetra, todo normal. Palancas:
+`SetBloodColor(DONT_BLEED)` dentro de `ScaleNPCDamage` (corre en TraceAttack
+ANTES de SpawnBlood/TraceBleed — verificado contra el SDK) con restore en
+`timer.Simple(0)` + `IsValid`; token per-hit `npc.ADS_BlockedHitToken =
+FrameNumber()` para el detour de metatable de Visceral (su `hasRedBlood()`
+bypasea el blood color en NPCs VJ); `npc.Bleeds = false` per-hit para la sangre
+propia de VJ (`DoBleed` no consulta `GetBloodColor` — verificado en
+`vjbaseactual`, `npc_vj_human_base/init.lua` L3966/L4000). Escopetas:
+`ScaleNPCDamage` corre por perdigón y `EntityTakeDamage` (donde escucha
+Visceral) una vez con daño agregado → blocked/clear por perdigón; la rama
+penetrada restaura en el MISMO frame para que la ráfaga mixta sangre.
+
+- PARCHE 1 — Decal compartido (`lua/autorun/ads_shared.lua`, archivo NUEVO):
+  `game.AddDecal("ADS_Ricochet", decals/metal/shot1..5_subrect)` en ambos realms
+  (`AddCSLuaFile`). Fila nueva en el mapa de archivos de CLAUDE.md.
+  **[APLICADO 2026-07-07]** — carga sin errores, pero el overlay no llega a
+  verse sobre el modelo (deuda cosmética, ver `ads_estado.md`).
+
+- PARCHE 2 — Núcleo Block FX (`ads_core.lua`): convars `ads_block_noblood_enabled`
+  / `ads_block_spark_enabled` / `ads_block_decal_enabled` (default 1, replicated+
+  archive); `ADS.ApplyBlockedHitFX(npc, di, hg, hitPos, hitNormal)` (token + stash
+  único de bloodColor/Bleeds con guard anti-doble-stash + chispa + decal
+  ADS_Ricochet) y `ADS.ClearBlockedHitFX(npc)` (restore inmediato + limpia token);
+  llamadas en los 3 sites (stash / inline_arc9 / inline), rama bloqueada Y
+  penetrada; stash del detour ARC9 enriquecido con `hitPos`/`hitNormal` del trace.
+  Fix durante verificación: el 4º arg de `util.Decal` es el FILTRO del trace
+  (entidades a ignorar), no el objetivo — pasar el npc impedía pintar sobre él.
+  **[APLICADO 2026-07-07]** — verificado en juego por el autor: bloqueo sin
+  sangre + chispa OK; penetración sangra normal. La rama decal, aun con el fix
+  del filtro, no se ve sobre el modelo → queda como deuda cosmética
+  (`ads_block_decal_enabled` inerte en la práctica).
+
+- PARCHE 3 — Compat Visceral/Animated Blood (`ads_core.lua`): bloque
+  `InitPostEntity` "ADS_AnimBlood_Compat" gateado por `ANIMATED_SPLATTER_EFFECT`;
+  detour de `RealisticBlood_BulletDamage`/`_OtherDamage`/`_PhysDamage`
+  (early-return con token fresco ≤1 frame, respeta `ads_block_noblood_enabled`
+  per-hit) + hook `CreateEntityRagdoll` que copia el token fresco al ragdoll
+  (Visceral re-ejecuta el último daño sobre el rag vía
+  `RealisticBlood_LastDMGINFO`). Sin tocar su `EntityFireBullets` (se re-lanza a
+  sí mismo con flag interna). **[APLICADO 2026-07-07]** — verificado en juego
+  por el autor con el addon montado: hits bloqueados sin efectos de sangre.
+
+- PARCHE 4 — UI (`cl_ads.lua`): 3 checkboxes "Block FX" en la sección Effects del
+  panel Armor + resets. **[APLICADO 2026-07-07]**
+
+---
+
 ## PARCHES DE sesión Limbs × VJ Base — Bloque C: animación de pickup del scavenger — 2026-07-07
 
 Sesión de diseño: `TryPickupAnimation` (`ads_scavenger.lua`) usaba `ResetSequence`/
