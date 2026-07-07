@@ -7,6 +7,9 @@ garrysmod/data/
 *.cache
 *.bsp
 
+# Notas y scripts de desarrollo local (no se versionan)
+dev/
+
 # Editor / OS
 .vscode/
 *.swp
