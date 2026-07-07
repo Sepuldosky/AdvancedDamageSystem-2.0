@@ -255,7 +255,21 @@ function ADS.LoadArmorData(parsed)
     if type(parsed.armor) == "table" then
         for class, profile in pairs(parsed.armor) do
             if type(class) == "string" and type(profile) == "table" then
-                ADS.ArmorProfiles[class] = profile   -- verbatim; se valida al usar (Init/GetZone)
+                -- Normalizar claves de zonas a string ("1".."7"): util.JSONToTable
+                -- convierte claves numéricas de objeto JSON en números de Lua, y el
+                -- contrato del data model (§8) es clave string. El browser indexa
+                -- zones["1"].."7"] — con claves numéricas el primer doble-clic tras
+                -- cargar del disco copiaba vacío (recién funcionaba tras re-guardar,
+                -- porque SanitizeArmor re-normaliza). El runtime nunca lo notó:
+                -- InitArmorNWvars/ApplyArmorDirect hacen tonumber(k) tolerante.
+                if type(profile.zones) == "table" then
+                    local zones = {}
+                    for k, z in pairs(profile.zones) do
+                        zones[tostring(k)] = z
+                    end
+                    profile.zones = zones
+                end
+                ADS.ArmorProfiles[class] = profile   -- resto verbatim; se valida al usar (Init/GetZone)
             end
         end
     end
