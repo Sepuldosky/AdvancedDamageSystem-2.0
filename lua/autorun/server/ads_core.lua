@@ -915,9 +915,29 @@ net.Receive("ads_request_armor", function(_, ply)
     if not IsValid(ply) or not ply:IsAdmin() then return end
     local classname = net.ReadString()
     if not classname or classname == "" then return end
+
+    -- Fuente preferida: el perfil de clase guardado (autoridad canónica).
+    local profile = ADS.ArmorProfiles[classname]
+    local src     = "profile"
+    -- Fallback: sin perfil de clase, copiar la armadura REAL de una instancia viva
+    -- blindada (aplicada por toolgun, init previa, o perfil no persistido). Así el copy
+    -- del browser refleja lo que el NPC tiene puesto, sin exigir un whitelist previo.
+    if (not profile or not next(profile)) and ADS.ReadArmorNWvars then
+        for _, e in ipairs(ents.FindByClass(classname)) do
+            if IsValid(e) and e:IsNPC() and e:GetNWBool("ADS_Armor_Init", false) then
+                local live = ADS.ReadArmorNWvars(e)
+                if next(live) then profile = live src = "live" break end
+            end
+        end
+    end
+    profile = profile or {}
+
+    dprint(2, "armor request", classname, "source="..src,
+        "zones="..(type(profile.zones)=="table" and table.Count(profile.zones) or 0))
+
     net.Start("ads_armor_data")
     net.WriteString(classname)
-    net.WriteTable(ADS.ArmorProfiles[classname] or {})
+    net.WriteTable(profile)
     net.Send(ply)
 end)
 
@@ -1001,30 +1021,8 @@ net.Receive("ads_tool_copy", function(_, ply)
     if not IsValid(ply) or not ply:IsAdmin() then return end
     local ent = net.ReadEntity()
     if not IsValid(ent) or not ent:IsNPC() then return end
-    -- Leer NWvars de armadura
-    local profile = {}
-    if ent:GetNWBool("ADS_Armor_Init", false) then
-        local zones = {}
-        for hg = 1, 7 do
-            local cls = ent:GetNWInt("ADS_Armor_Class_" .. hg, 0)
-            if cls > 0 then
-                zones[tostring(hg)] = {
-                    class    = cls,
-                    dur_max  = ent:GetNWInt("ADS_Armor_MaxDur_" .. hg, 0),
-                    material = ent:GetNWString("ADS_Armor_Mat_" .. hg, "aramid"),
-                }
-            end
-        end
-        if next(zones) then profile.zones = zones end
-        local gcls = ent:GetNWInt("ADS_Armor_Class_0", 0)
-        if gcls > 0 then
-            profile.fallback_generic = {
-                class    = gcls,
-                dur_max  = ent:GetNWInt("ADS_Armor_MaxDur_0", 0),
-                material = ent:GetNWString("ADS_Armor_Mat_0", "aramid"),
-            }
-        end
-    end
+    -- Leer NWvars de armadura viva (helper puro en ads_armor.lua)
+    local profile = ADS.ReadArmorNWvars and ADS.ReadArmorNWvars(ent) or {}
     -- Reconstruir fracs de limbs desde ADS_SpawnHP
     local hf, af, lf = 0.5, 0.5, 0.5
     local spawnHP = ent.ADS_SpawnHP

@@ -5,7 +5,7 @@
 > secciones ni historial). El historial vive en `git` + [`CHANGELOG.md`](CHANGELOG.md).
 > Si crece de una pantalla, está mal redactado: recortar.
 
-**Última actualización:** 2026-07-06
+**Última actualización:** 2026-07-07
 
 ---
 
@@ -50,6 +50,10 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
 
 ## Pendiente de verificar en juego
 
+- **Copy de armadura por doble-clic (browser):** `ads_request_armor` ahora cae a leer la
+  armadura viva de una instancia blindada (`ADS.ReadArmorNWvars`) cuando la clase no tiene
+  perfil en `ADS.ArmorProfiles` — así el doble-clic copia las placas sin exigir un whitelist
+  previo. Confirmar en juego con `ads_debug 2` (`source=live` vs `source=profile`).
 - **Block 7 — NPC disparando ARC9:** confirmar empíricamente cuál path ocurre
   (`path=stash` del detour vs. `path=inline_arc9`) cuando un NPC (scavenger /
   `arc9_givenpcweapon`) dispara ARC9. El código cubre ambos; falta la confirmación real

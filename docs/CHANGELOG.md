@@ -56,6 +56,25 @@ tab Weapons + fallback inline `inline_arc9`. Detalle: arquitectura §18.
 
 ---
 
+## PARCHES DE sesión Fix copy de armadura por doble-clic — 2026-07-07
+
+Sesión de fix: el doble-clic sobre un NPC en la lista del browser no copiaba las **placas
+de armadura** de un NPC ya blindado al template (solo funcionaba tras guardar armadura vía
+"Whitelist Selected"). Causa: `ads_request_armor` devuelve `ADS.ArmorProfiles[classname]`
+(perfil de **clase**), no la armadura viva del NPC; si la clase no tiene perfil vigente al
+momento del copy, respondía vacío y la silueta quedaba sin zonas.
+
+- PARCHE 1 — `ADS.ReadArmorNWvars(ent)` (`ads_armor.lua`): función pura nueva que lee la
+  armadura viva de una entidad desde sus NWvars a tabla de perfil (`zones` +
+  `fallback_generic`, usando MaxDur para arrancar con placas llenas). Factoriza el bloque
+  inline que ya usaba `ads_tool_copy`. `ads_request_armor` (`ads_core.lua`) ahora cae a esa
+  lectura sobre una instancia viva blindada (`ents.FindByClass`) cuando
+  `ADS.ArmorProfiles[classname]` está vacío, con `dprint(2)` (`source=profile|live`);
+  `ads_tool_copy` reutiliza el helper. **[PENDIENTE]** — verificar en juego con `ads_debug 2`
+  que el doble-clic copia las zonas sin whitelist previo (`source=live`).
+
+---
+
 ## PARCHES DE sesión Scavenger — Retrieve Own Weapon + UI de pesos — 2026-07-06
 
 Sesión de diseño: modo "recuperar arma propia" (toggle) para el scavenger + cierre del

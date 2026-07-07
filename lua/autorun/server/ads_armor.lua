@@ -388,6 +388,42 @@ function ADS.GetZone(ent, hg)
     return nil
 end
 
+-- Lee la armadura VIVA de una entidad desde sus NWvars y la arma como tabla de perfil
+-- (mismo formato que ADS.ArmorProfiles / InitArmorNWvars: zones por hg string con
+-- class/dur_max/material + fallback_generic). Función pura: solo lee NWvars del ent
+-- dado (igual que GetZone), sin side-effects. Usa MaxDur (no la durabilidad actual)
+-- para que el perfil copiado arranque con las placas llenas. Devuelve {} si el ent no
+-- tiene armadura inicializada. Inversa de ApplyArmorDirect; la consumen el copy del
+-- toolgun (ads_tool_copy) y el fallback de ads_request_armor.
+function ADS.ReadArmorNWvars(ent)
+    local profile = {}
+    if not IsValid(ent) or not ent:GetNWBool("ADS_Armor_Init", false) then return profile end
+
+    local zones = {}
+    for hg = 1, 7 do
+        local cls = ent:GetNWInt("ADS_Armor_Class_" .. hg, 0)
+        if cls > 0 then
+            zones[tostring(hg)] = {
+                class    = cls,
+                dur_max  = ent:GetNWInt("ADS_Armor_MaxDur_" .. hg, 0),
+                material = ent:GetNWString("ADS_Armor_Mat_" .. hg, "aramid"),
+            }
+        end
+    end
+    if next(zones) then profile.zones = zones end
+
+    local gcls = ent:GetNWInt("ADS_Armor_Class_0", 0)
+    if gcls > 0 then
+        profile.fallback_generic = {
+            class    = gcls,
+            dur_max  = ent:GetNWInt("ADS_Armor_MaxDur_0", 0),
+            material = ent:GetNWString("ADS_Armor_Mat_0", "aramid"),
+        }
+    end
+
+    return profile
+end
+
 -- Aplica un perfil de armadura directamente a las NWvars de la entidad sin consultar
 -- ArmorProfiles (que es config por clase). Usado por el toolgun debug para armadura
 -- per-entity efímera. Formato de profile idéntico a InitArmorNWvars.
