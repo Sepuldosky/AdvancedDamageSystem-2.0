@@ -28,7 +28,10 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
   curated_weapons, ammo_fallback}`.
 - **`ads_limbs`:** drop de arma al vaciarse el pool de **cualquier brazo** (L o R);
   el drop marca el arma para el scavenger (`MarkWeaponAsDroppedBy` +
-  `RecordOwnWeaponDrop`).
+  `RecordOwnWeaponDrop`). **Integración VJ nativa** (verificada 2026-07-07): stun de
+  cabeza por flinch forzado (`DMG_FORCE_FLINCH`), cojera por traducción de activities
+  (run→walk + `ACT_WALK_HURT`, umbral `ads_limb_vj_limp_threshold`), pickup anim del
+  scavenger vía `VJ_ACT_PLAYACTIVITY`. Creatures VJ sin cojera (deuda).
 - **`ads_scavenger`:** pesos auto (DPS o slot-fallback) + overrides por classname
   (JSON propio); **modo "recuperar arma propia"** (`ads_scavenger_retrieve_own`):
   armado nunca cambia de arma, desarmado prioriza la suya (delay/timeout convars) y
@@ -50,23 +53,14 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
 
 ## Pendiente de verificar en juego
 
-- **Sesión Limbs × VJ — Bloques A, B y C (3 parches `[PENDIENTE]`):**
-  **A** — stun de cabeza VJ ahora fuerza el **flinch nativo** (`DMG_FORCE_FLINCH` sobre
-  el dmginfo en `ApplyHeadStun`; fuera `IsGuard`/`VJ_ACT_PLAYACTIVITY`, que no
-  interrumpían el FSM Lua de VJ). Confirmar con `ads_debug 2` (`stun_vj_flinch 50/25`)
-  que la animación interrumpe ataque/movimiento y que no hay flinch aleatorio en NPCs
-  con `CanFlinch=false`. Duración VJ = animación (convars `_stun_*` solo nativos).
-  **B** — cojera VJ humano por **traducción de activities** (wrapper per-entity de
-  `TranslateActivity`, run→walk + `ACT_WALK_HURT` si el modelo la tiene; umbral
-  `ads_limb_vj_limp_threshold` 0.7). Confirmar `vj_limp_on/off`, correr→caminar con
-  variante de arma, y recarga/ataque a velocidad normal. Creatures VJ sin cojera (deuda).
-  **C** — animación de pickup del scavenger en VJ vía `VJ_ACT_PLAYACTIVITY` con lock
-  (fuera `ResetSequence` crudo, que el FSM pisaba). Confirmar con `ads_scavenger_debug 1`
-  la animación de agacharse + equip al 70%, y equip instantáneo en modelos sin anim.
-- **Copy de armadura por doble-clic (browser):** `ads_request_armor` ahora cae a leer la
-  armadura viva de una instancia blindada (`ADS.ReadArmorNWvars`) cuando la clase no tiene
-  perfil en `ADS.ArmorProfiles` — así el doble-clic copia las placas sin exigir un whitelist
-  previo. Confirmar en juego con `ads_debug 2` (`source=live` vs `source=profile`).
+- **Copy de armadura por doble-clic (browser) — 2 parches `[PENDIENTE]`:**
+  (1) `ads_request_armor` cae a leer la armadura viva de una instancia blindada
+  (`ADS.ReadArmorNWvars`) cuando la clase no tiene perfil — copia sin whitelist previo
+  (`source=live`). (2) **Fix clave del bug "primer doble-clic vacío" en clases ya
+  whitelisted:** `util.JSONToTable` numeriza las claves de zonas (`"1"`→`1`) y
+  `LoadArmorData` las guardaba verbatim → el browser (claves string) no veía nada hasta
+  re-guardar. Ahora `LoadArmorData` normaliza a string al cargar. Confirmar tras recargar
+  mapa: primer doble-clic sobre clase whitelisted puebla la silueta sin re-guardar.
 - **Block 7 — NPC disparando ARC9:** confirmar empíricamente cuál path ocurre
   (`path=stash` del detour vs. `path=inline_arc9`) cuando un NPC (scavenger /
   `arc9_givenpcweapon`) dispara ARC9. El código cubre ambos; falta la confirmación real

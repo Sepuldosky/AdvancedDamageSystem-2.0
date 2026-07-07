@@ -74,8 +74,8 @@ L706, pero esas keys no están mapeadas).
   "physgun_pickup"}, mismo orden de preferencia que el path nativo); loop con
   `VJ_ACT_PLAYACTIVITY(anim, lockAnim=true, lockAnimTime=false, faceEnemy=false)` y
   primera duración > 0 gana; 0 = equipar de inmediato (contrato existente intacto:
-  `doEquip` al 70% de la duración). Path nativo sin cambios. **[PENDIENTE]** —
-  verificar en juego con `ads_scavenger_debug 1`: NPC VJ desarmado llega al arma,
+  `doEquip` al 70% de la duración). Path nativo sin cambios. **[APLICADO 2026-07-07]**
+  — verificado en juego por el autor. Criterios: NPC VJ desarmado llega al arma,
   reproduce la animación de agacharse (citizen/rebel con secuencia "pickup"), el
   equip aterriza durante la animación, y un modelo sin animación (Combine) equipa
   al instante sin trabarse; confirmar que el lock no deja al NPC pegado si el equip
@@ -106,8 +106,9 @@ de la traducción conserva las variantes de arma/aim (las ramas internas re-llam
   animación de herido — cojera visible. En `ApplyLimbDebuffs`: toggle edge-triggered
   bajo el umbral con nudge `StopMoving()` (re-traduce la locomoción en curso) y dprint
   `vj_limp_on/off`; `m_flGroundSpeed` y el Think de `SetLocalVelocity` quedan solo
-  para NPCs no-VJ-humanos (creatures VJ = deuda conocida, sin cojera). **[PENDIENTE]**
-  — verificar en juego con `ads_debug 2`: `vj_limp_on` al romper una pierna, el NPC
+  para NPCs no-VJ-humanos (creatures VJ = deuda conocida, sin cojera).
+  **[APLICADO 2026-07-07]** — verificado en juego por el autor. Criterios:
+  `vj_limp_on` al romper una pierna, el NPC
   pasa de correr a caminar (variante de arma correcta al apuntar), citizen con
   hurt-walk cojea, cura revierte (`vj_limp_off`), y recarga/ataque a velocidad normal.
 
@@ -138,8 +139,9 @@ C (animación de pickup del scavenger) diseñados pero fuera de esta sesión.
   un `DamageCustom` ajeno (DMG_BLEED). `dmginfo` viaja `ProcessLimbHit` →
   `ApplyLimbDebuffs(npc, reason, dmginfo)` → `ApplyHeadStun` (spawn/heal pasan nil →
   no stun, correcto). Las convars `ads_limb_head_stun_*_duration` quedan solo para
-  NPCs nativos: en VJ la duración la manda la animación de flinch. **[PENDIENTE]** —
-  verificar en juego con `ads_debug 2`: buscar `stun_vj_flinch 50/25` al cruzar
+  NPCs nativos: en VJ la duración la manda la animación de flinch.
+  **[APLICADO 2026-07-07]** — verificado en juego por el autor. Criterios: buscar
+  `stun_vj_flinch 50/25` al cruzar
   umbrales de cabeza en un NPC VJ, confirmar que la animación interrumpe ataque y
   movimiento, y que NPCs con `CanFlinch=false` de fábrica no flinchean aleatoriamente
   con daño normal.
@@ -162,6 +164,21 @@ momento del copy, respondía vacío y la silueta quedaba sin zonas.
   `ADS.ArmorProfiles[classname]` está vacío, con `dprint(2)` (`source=profile|live`);
   `ads_tool_copy` reutiliza el helper. **[PENDIENTE]** — verificar en juego con `ads_debug 2`
   que el doble-clic copia las zonas sin whitelist previo (`source=live`).
+
+- PARCHE 2 — Normalización de claves de zonas al cargar del JSON (`ads_armor.lua`
+  `LoadArmorData`): la verificación en juego del PARCHE 1 (2026-07-07) reveló el caso
+  restante — el **primer** doble-clic sobre una clase ya whitelisted (perfil persistido)
+  seguía copiando vacío y funcionaba recién tras re-guardar. Causa: `util.JSONToTable`
+  convierte las claves numéricas de objeto JSON (`"1"`.."7"`) en **números** de Lua, y
+  `LoadArmorData` guardaba el perfil verbatim → `ads_request_armor` mandaba `zones[1]`
+  numérico y el browser (que indexa `zones["1"]` string, igual que `SanitizeArmor` y el
+  data model §8) renderizaba nada; al guardar, `SanitizeArmor` re-normalizaba a string y
+  por eso los copies siguientes sí funcionaban. El runtime nunca lo notó porque
+  `InitArmorNWvars`/`ApplyArmorDirect` hacen `tonumber(k)` tolerante. Fix:
+  `LoadArmorData` reconstruye `profile.zones` con `tostring(k)` al ingerir `parsed.armor`.
+  **[PENDIENTE]** — verificar en juego: recargar mapa (perfiles desde JSON), primer
+  doble-clic sobre clase whitelisted con armadura puebla la silueta (`ads_debug 2`,
+  `source=profile`, y las zonas aparecen sin re-guardar).
 
 ---
 
