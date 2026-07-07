@@ -240,8 +240,27 @@ end
 -- Pickup animation
 -- ============================================================
 
+-- Candidatas en orden de preferencia; PlayAnim de VJ acepta activities y strings de
+-- secuencia (auto-convierte), y valida con VJ.AnimExists (devuelve dur=0 si falta).
+local PICKUP_ANIMS_VJ = {ACT_PICKUP_GROUND, ACT_PICKUP_RACK, "pickup", "pickup_weapon", "physgun_pickup"}
+
 local function TryPickupAnimation(npc)
     if not IsValid(npc) then return 0 end
+
+    -- Rama VJ: ResetSequence crudo no sirve aquí — el FSM de RunAI (0.1 s) lo pisa
+    -- al siguiente tick. VJ_ACT_PLAYACTIVITY (alias de PlayAnim) con lockAnim=true
+    -- interrumpe el schedule en curso (StopMoving + ClearSchedule) y bloquea
+    -- chase/idle/ataques durante la animación; lockAnimTime=false = duración real.
+    if npc.IsVJBaseSNPC and npc.VJ_ACT_PLAYACTIVITY then
+        for _, anim in ipairs(PICKUP_ANIMS_VJ) do
+            local ok, _, dur = pcall(npc.VJ_ACT_PLAYACTIVITY, npc, anim,
+                true,   -- lockAnim: bloquea la IA mientras dura la animación
+                false,  -- lockAnimTime=false: que VJ calcule la duración real
+                false)  -- faceEnemy: sin rotación
+            if ok and isnumber(dur) and dur > 0 then return dur end
+        end
+        return 0  -- modelo sin animación de pickup: equipar de inmediato
+    end
 
     -- Approach 1: native Source pickup activities (Combine, Citizen, Metropolice support these)
     local activities = {ACT_PICKUP_GROUND, ACT_PICKUP_RACK}
