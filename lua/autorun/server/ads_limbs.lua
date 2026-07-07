@@ -17,6 +17,7 @@ local DMG_XFER_LEGS = CreateConVar("ads_limb_damage_transfer_legs",        "0.7"
 local ACC_ARM       = CreateConVar("ads_limb_accuracy_max_penalty_per_arm","1.0", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local ACC_HEAD      = CreateConVar("ads_limb_accuracy_max_penalty_head",   "0.5", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local SPD_LEG       = CreateConVar("ads_limb_min_speed_mult_per_leg",      "0.5", FCVAR_REPLICATED + FCVAR_ARCHIVE)
+local VJ_LIMP_T     = CreateConVar("ads_limb_vj_limp_threshold",           "0.7", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local STN50_DUR     = CreateConVar("ads_limb_head_stun_50_duration",       "1.0", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local STN25_DUR     = CreateConVar("ads_limb_head_stun_25_duration",       "2.5", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 
@@ -74,6 +75,50 @@ local function TryDropWeapon(npc, pos)
         ADS.RecordOwnWeaponDrop(npc, dropped, cls)
     end
     return dropped
+end
+
+-- ── Cojera VJ (base humana) ──────────────────────────────────────────────────
+-- Los NPC VJ de suelo usan el motor NATIVO de pathing (TASK_RUN_PATH/TASK_WALK_PATH):
+-- la velocidad real sale del root motion de la animación de locomoción, que VJ elige
+-- vía ENT:TranslateActivity + AnimationTranslations (por hold type del arma). Palanca
+-- correcta: degradar la familia run→walk ANTES de la traducción de VJ — las ramas
+-- internas de TranslateActivity llaman self:TranslateActivity recursivamente
+-- (npc_vj_human_base/init.lua L2437/L2448), así que las variantes de arma/aim
+-- (ACT_WALK_AIM_RIFLE, etc.) se conservan solas. SetPlaybackRate quedó descartado:
+-- VJ lo detourea hacia AnimPlaybackRate (funcs.lua L872) y eso escala TODAS las
+-- animaciones (recarga, ataque) y los timers que dependen de ellas.
+local VJ_RUN_TO_WALK = {
+    [ACT_RUN]            = ACT_WALK,
+    [ACT_RUN_AIM]        = ACT_WALK_AIM,
+    [ACT_RUN_AGITATED]   = ACT_WALK_AGITATED,
+    [ACT_RUN_CROUCH]     = ACT_WALK_CROUCH,
+    [ACT_RUN_CROUCH_AIM] = ACT_WALK_CROUCH_AIM,
+    [ACT_RUN_PROTECTED]  = ACT_WALK,
+}
+
+-- Wrapper per-entity de TranslateActivity. Idempotente; se instala al primer cruce
+-- del umbral y queda inerte cuando ADS_VJ_Limping es false (curación). No toca la
+-- tabla AnimationTranslations de VJ (se reconstruye en cada cambio de arma), por eso
+-- el wrapper sobrevive a UpdateAnimationTranslations sin re-aplicar nada.
+local function InstallVJLimpTranslator(npc)
+    if npc.ADS_VJ_LimpInstalled then return end
+    npc.ADS_VJ_LimpInstalled = true
+    -- Cache: ¿el modelo tiene animación de caminar herido? (citizens HL2 sí; soldados
+    -- Combine no). El modelo no cambia en vida de la entidad.
+    npc.ADS_VJ_HasHurtWalk = (VJ and VJ.AnimExists and VJ.AnimExists(npc, ACT_WALK_HURT)) or false
+    local orig = npc.TranslateActivity  -- método de clase (ENT), capturado vía __index
+    npc.TranslateActivity = function(self, act)
+        if self.ADS_VJ_Limping then
+            local out = orig(self, VJ_RUN_TO_WALK[act] or act)
+            -- Solo si VJ devolvió el walk pelado (sin variante de arma/aim) usamos la
+            -- animación de herido del modelo: cojera visible estilo HL2.
+            if out == ACT_WALK and self.ADS_VJ_HasHurtWalk then
+                return ACT_WALK_HURT
+            end
+            return out
+        end
+        return orig(self, act)
+    end
 end
 
 -- Apply head stun with dual-path:
@@ -182,14 +227,30 @@ local function ApplyLimbDebuffs(npc, reason, dmginfo)
 
     -- Speed multiplier: Lerp(ratio, minSpd, 1.0) → 0 HP gives minSpd, full HP gives 1.0.
     -- Both legs multiplied (0.5 * 0.5 = 0.25 when both destroyed).
-    -- Mechanism 1: m_flGroundSpeed (works on some Source NPCs).
-    -- Mechanism 2: ADS_LegSpeedMult stored for the recurring Think hook (SetLocalVelocity).
+    -- VJ humano: cojera por traducción de activities (InstallVJLimpTranslator) — el
+    -- motor nativo recalcula la velocidad desde el root motion de la animación, así
+    -- que m_flGroundSpeed/SetLocalVelocity no le hacen efecto estable.
+    -- Nativos: mecanismo 1 m_flGroundSpeed + mecanismo 2 Think con SetLocalVelocity.
     local minSpd   = SPD_LEG:GetFloat()
     local multLegL = Lerp(r_legL, minSpd, 1.0)
     local multLegR = Lerp(r_legR, minSpd, 1.0)
     local finalSpd = multLegL * multLegR
-    pcall(function() npc:SetSaveValue("m_flGroundSpeed", npc.ADS_GroundSpeedBase * finalSpd) end)
     npc.ADS_LegSpeedMult = finalSpd
+    if npc.IsVJBaseSNPC_Human then
+        local limping = finalSpd < VJ_LIMP_T:GetFloat()
+        if limping and not npc.ADS_VJ_LimpInstalled then InstallVJLimpTranslator(npc) end
+        if (npc.ADS_VJ_Limping == true) ~= limping then
+            npc.ADS_VJ_Limping = limping
+            -- Nudge: cortar el movimiento en curso para que la locomoción se
+            -- re-traduzca ya; si no, mantiene la animación actual (y su velocidad)
+            -- hasta el próximo cambio de schedule.
+            pcall(function() npc:StopMoving() end)
+            dprint(2, "event", npc:GetClass(), limping and "vj_limp_on" or "vj_limp_off",
+                "spd=" .. string.format("%.2f", finalSpd))
+        end
+    else
+        pcall(function() npc:SetSaveValue("m_flGroundSpeed", npc.ADS_GroundSpeedBase * finalSpd) end)
+    end
 
     dprint(2, "debuff", npc:GetClass(),
         "acc_penalty=" .. string.format("%.2f", totalPen),
@@ -417,7 +478,9 @@ hook.Add("EntityRemoved", "ADS_Limbs_Cleanup", function(e)
     timer.Remove("ads_limb_stun_" .. e:EntIndex())
 end)
 
--- Fix 1: Recurring leg slowdown via SetLocalVelocity (20 Hz, only NPCs with reduced speed)
+-- Fix 1: Recurring leg slowdown via SetLocalVelocity (20 Hz, only NPCs with reduced speed).
+-- VJ humanos excluidos: su cojera va por traducción de activities (root motion);
+-- pelear acá con el motor nativo solo produce jitter.
 local legThinkNext = 0
 hook.Add("Think", "ADS_Limbs_LegSpeed", function()
     if not EN_LIMBS:GetBool() then return end
@@ -426,7 +489,8 @@ hook.Add("Think", "ADS_Limbs_LegSpeed", function()
     legThinkNext = now + 0.05
 
     for _, npc in ipairs(ents.GetAll()) do
-        if IsValid(npc) and npc:IsNPC() and npc.ADS_LegSpeedMult and npc.ADS_LegSpeedMult < 1.0 then
+        if IsValid(npc) and npc:IsNPC() and not npc.IsVJBaseSNPC_Human
+           and npc.ADS_LegSpeedMult and npc.ADS_LegSpeedMult < 1.0 then
             local v = npc:GetVelocity()
             if v:LengthSqr() > 1 then
                 pcall(function() npc:SetLocalVelocity(v * npc.ADS_LegSpeedMult) end)
