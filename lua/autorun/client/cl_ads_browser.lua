@@ -498,6 +498,11 @@ local MAT_DISPLAY = {
 -- su definición léxica. Sin esto el nombre bindea a global nil y crashea al usarse.
 local BuildRightPanel
 
+-- Forward declaration: BuildArmorTab estiliza sus DSlider con StyleManualSlider,
+-- que se define léxicamente más abajo (junto a Weapons/Scavenger). Sin este forward
+-- decl el nombre bindea a global nil dentro del tab Armor.
+local StyleManualSlider
+
 -- Copia armor (async) + limbs (sync desde cache WL) de una clase al template.
 -- Doble-click en una fila llama a esta función. También la usa el botón Copy Selected.
 function ADS_Browser.CopyFromClass(classname)
@@ -850,6 +855,7 @@ local function BuildArmorTab(parent)
 
     local durSlider = vgui.Create("DSlider", durRow)
     durSlider:Dock(FILL)
+    StyleManualSlider(durSlider)
 
     local durUpdating = false
     local function durSetValue(v)
@@ -1085,6 +1091,7 @@ local function BuildArmorTab(parent)
 
     local fgDurSlider = vgui.Create("DSlider", fgDurRow)
     fgDurSlider:Dock(FILL)
+    StyleManualSlider(fgDurSlider)
 
     local fgDurUpdating = false
     local function fgDurSetValue(v)
@@ -1482,7 +1489,8 @@ local WAD_MIN, WAD_MAX = 1, 120
 
 -- Estiliza un DSlider manual: dibuja track + fill visibles. El skin base no los
 -- muestra con contraste suficiente sobre el fondo oscuro de ADS Configuration.
-local function StyleManualSlider(slider)
+-- (declarado como forward decl arriba para que BuildArmorTab también pueda usarlo)
+StyleManualSlider = function(slider)
     slider.Paint = function(self, w, h)
         local midY = math.floor(h / 2)
         surface.SetDrawColor(60, 60, 60, 255)
@@ -1556,7 +1564,7 @@ local function BuildWeaponsTab(parent)
 
     local noteLabel = vgui.Create("DLabel", parent)
     noteLabel:Dock(TOP) noteLabel:DockMargin(4, 0, 4, 4)
-    noteLabel:SetText("") noteLabel:SetTextColor(Color(180, 170, 110))
+    noteLabel:SetText("") noteLabel:SetTextColor(Color(210, 210, 210))
     noteLabel:SetWrap(true) noteLabel:SetAutoStretchVertical(true)
 
     local selectedClass = nil
@@ -1898,7 +1906,7 @@ local function BuildScavengerTab(parent)
     header:Dock(TOP) header:DockMargin(4, 6, 4, 2)
     header:SetText("NPC scavenger weapon weights. Higher weight = more desirable. Weapons without an override use the auto formula (DPS-based, or a flat per-slot value when the SWEP exposes no damage). Override 0 = NPCs never pick that weapon up.")
     header:SetWrap(true) header:SetAutoStretchVertical(true)
-    header:SetTextColor(Color(180, 170, 110))
+    header:SetTextColor(Color(210, 210, 210))
 
     -- ── Search + filtro de overrides ─────────────────────────────────────────
     local filterRow = vgui.Create("DPanel", parent)
@@ -1928,7 +1936,7 @@ local function BuildScavengerTab(parent)
 
     local infoLabel = vgui.Create("DLabel", parent)
     infoLabel:Dock(TOP) infoLabel:DockMargin(4, 0, 4, 4)
-    infoLabel:SetText("") infoLabel:SetTextColor(Color(180, 170, 110))
+    infoLabel:SetText("") infoLabel:SetTextColor(Color(210, 210, 210))
     infoLabel:SetWrap(true) infoLabel:SetAutoStretchVertical(true)
 
     local selectedClass = nil
