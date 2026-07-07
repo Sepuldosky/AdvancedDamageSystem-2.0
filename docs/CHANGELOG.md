@@ -56,6 +56,96 @@ tab Weapons + fallback inline `inline_arc9`. Detalle: arquitectura §18.
 
 ---
 
+## PARCHES DE sesión Limbs × VJ Base — Bloque C: animación de pickup del scavenger — 2026-07-07
+
+Sesión de diseño: `TryPickupAnimation` (`ads_scavenger.lua`) usaba `ResetSequence`/
+`SetCycle` crudos, que el FSM Lua de VJ (`RunAI`, 0.1 s) pisa al siguiente tick — en
+NPCs VJ la animación de recogida no se veía. VJ no trae ningún schedule de "recoger
+arma del piso" (0 hits de pickup para NPCs en su árbol; su sistema solo cubre players);
+la palanca correcta es `PlayAnim` (vía alias `VJ_ACT_PLAYACTIVITY`): interrumpe el
+schedule en curso (StopMoving + ClearSchedule), bloquea chase/idle/ataques con
+lockAnim, valida con `VJ.AnimExists` (no-op puro con dur=0 si el modelo no tiene la
+animación) y devuelve la duración real como segundo valor. `ACT_PICKUP_*` no colisiona
+con la tabla run→walk del Bloque B (PlayAnim pasa por `TranslateActivity`, core.lua
+L706, pero esas keys no están mapeadas).
+
+- PARCHE 1 — Rama VJ en `TryPickupAnimation` (`ads_scavenger.lua`): tabla
+  `PICKUP_ANIMS_VJ` ({ACT_PICKUP_GROUND, ACT_PICKUP_RACK, "pickup", "pickup_weapon",
+  "physgun_pickup"}, mismo orden de preferencia que el path nativo); loop con
+  `VJ_ACT_PLAYACTIVITY(anim, lockAnim=true, lockAnimTime=false, faceEnemy=false)` y
+  primera duración > 0 gana; 0 = equipar de inmediato (contrato existente intacto:
+  `doEquip` al 70% de la duración). Path nativo sin cambios. **[PENDIENTE]** —
+  verificar en juego con `ads_scavenger_debug 1`: NPC VJ desarmado llega al arma,
+  reproduce la animación de agacharse (citizen/rebel con secuencia "pickup"), el
+  equip aterriza durante la animación, y un modelo sin animación (Combine) equipa
+  al instante sin trabarse; confirmar que el lock no deja al NPC pegado si el equip
+  falla (cooldown post-drop de 8 s ya cubre el re-scan).
+
+---
+
+## PARCHES DE sesión Limbs × VJ Base — Bloque B: cojera por traducción de activities — 2026-07-07
+
+Sesión de diseño: el slow de piernas era inefectivo en NPCs VJ — usan el motor de
+pathing NATIVO (`TASK_RUN_PATH` como engine task real) cuya velocidad sale del root
+motion de la animación de locomoción, recalculada por el motor en su propio tick; el
+`SetLocalVelocity` a 20 Hz de ADS competía y perdía (jitter), y `m_flGroundSpeed` no
+lo lee nada en VJ (0 hits en su árbol). `SetPlaybackRate` se descartó (propuesta
+original del bloque): VJ lo detourea hacia `AnimPlaybackRate` (`funcs.lua` L872) y eso
+escala TODAS las animaciones (recarga, ataque) y sus timers. Palanca elegida: el
+sistema de **traducción de activities** de VJ (`ENT:TranslateActivity` +
+`AnimationTranslations`, `npc_vj_human_base/init.lua` L2417) — degradar run→walk antes
+de la traducción conserva las variantes de arma/aim (las ramas internas re-llaman
+`self:TranslateActivity`), y el root motion baja la velocidad real sin pelear con nadie.
+
+- PARCHE 1 — Cojera VJ (`ads_limbs.lua`): convar `ads_limb_vj_limp_threshold` (0.7);
+  tabla `VJ_RUN_TO_WALK` (RUN/AIM/AGITATED/CROUCH/CROUCH_AIM/PROTECTED → walk
+  equivalente); `InstallVJLimpTranslator` = wrapper per-entity de `TranslateActivity`
+  (idempotente, inerte con `ADS_VJ_Limping=false`, sobrevive a
+  `UpdateAnimationTranslations` porque no toca la tabla de VJ) con bonus: si VJ
+  devuelve `ACT_WALK` pelado y el modelo tiene `ACT_WALK_HURT` (citizens HL2), usa la
+  animación de herido — cojera visible. En `ApplyLimbDebuffs`: toggle edge-triggered
+  bajo el umbral con nudge `StopMoving()` (re-traduce la locomoción en curso) y dprint
+  `vj_limp_on/off`; `m_flGroundSpeed` y el Think de `SetLocalVelocity` quedan solo
+  para NPCs no-VJ-humanos (creatures VJ = deuda conocida, sin cojera). **[PENDIENTE]**
+  — verificar en juego con `ads_debug 2`: `vj_limp_on` al romper una pierna, el NPC
+  pasa de correr a caminar (variante de arma correcta al apuntar), citizen con
+  hurt-walk cojea, cura revierte (`vj_limp_off`), y recarga/ataque a velocidad normal.
+
+---
+
+## PARCHES DE sesión Limbs × VJ Base — Bloque A: head stun por flinch nativo — 2026-07-07
+
+Sesión de diseño: investigación de la arquitectura real de VJ Base (fuente en
+`vjbaseactual/`, copia de referencia — no se carga en juego) concluyó que el stun de
+cabeza de `ads_limbs` era inefectivo en NPCs VJ: `RunAI()` de VJ es un FSM Lua propio
+que ignora `SetSchedule` nativo; `IsGuard` solo afecta la PRÓXIMA selección de schedule
+(no interrumpe nada en curso); y `VJ_ACT_PLAYACTIVITY(ACT_*_FLINCH)` falla mudo si el
+modelo no tiene esa activity. VJ trae un sistema de flinch nativo por hitgroup
+(`ENT:Flinch`, `vj_base/ai/core.lua` L2594, llamado automáticamente en su
+`OnTakeDamage`) con constante de bypass a propósito: `VJ.DMG_FORCE_FLINCH`
+("Causes NPCs to always flinch", `enums.lua` L44). Bloques B (cojera de piernas) y
+C (animación de pickup del scavenger) diseñados pero fuera de esta sesión.
+
+- PARCHE 1 — Rama VJ de `ApplyHeadStun` (`ads_limbs.lua`) reescrita: fuera
+  `IsGuard`/`StopMoving`/`VJ_ACT_PLAYACTIVITY` + timer de restore; ahora marca el
+  daño con `dmginfo:SetDamageCustom(VJ.DMG_FORCE_FLINCH)` (llamada a método, no
+  inyección de campo — contrato intacto) para que el propio `Flinch()` de VJ ejecute
+  la animación correcta del modelo (`FlinchHitGroupMap`/`AnimTbl_Flinch`) con lock
+  real de schedule/ataques. Detalles: habilita `CanFlinch` si estaba apagado con
+  `FlinchChance = 1e9` (el roll aleatorio queda inerte, solo dispara el forzado);
+  limpia `NextFlinchT` (el guard de cooldown corre ANTES del bypass); el stun severo
+  (25%) además limpia `Flinching`/`AnimLockTime` para pisar un flinch activo; no pisa
+  un `DamageCustom` ajeno (DMG_BLEED). `dmginfo` viaja `ProcessLimbHit` →
+  `ApplyLimbDebuffs(npc, reason, dmginfo)` → `ApplyHeadStun` (spawn/heal pasan nil →
+  no stun, correcto). Las convars `ads_limb_head_stun_*_duration` quedan solo para
+  NPCs nativos: en VJ la duración la manda la animación de flinch. **[PENDIENTE]** —
+  verificar en juego con `ads_debug 2`: buscar `stun_vj_flinch 50/25` al cruzar
+  umbrales de cabeza en un NPC VJ, confirmar que la animación interrumpe ataque y
+  movimiento, y que NPCs con `CanFlinch=false` de fábrica no flinchean aleatoriamente
+  con daño normal.
+
+---
+
 ## PARCHES DE sesión Fix copy de armadura por doble-clic — 2026-07-07
 
 Sesión de fix: el doble-clic sobre un NPC en la lista del browser no copiaba las **placas
