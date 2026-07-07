@@ -31,6 +31,7 @@ Comentarios y mensajes de commit en **español**; los `<tipo>` de commit van en 
 | `lua/autorun/server/ads_armor.lua` | **Funciones puras**: extractor + resolver. Tablas estáticas (materiales, ammo fallback, curated weapons). NWvars de armadura por zona. Sin hooks, sin call sites. |
 | `lua/autorun/server/ads_limbs.lua` | HP por extremidad: pools head/arms/legs, debuffs, drop de arma, stun, API de healing. |
 | `lua/autorun/server/ads_scavenger.lua` | NPCs recogen armas del suelo. |
+| `lua/autorun/ads_shared.lua` | Registro compartido (ambos realms): decals del addon (`game.AddDecal "ADS_Ricochet"`). |
 | `lua/autorun/client/cl_ads.lua` | Paneles del menú Q (spawnmenu `Options`). |
 | `lua/autorun/client/cl_ads_browser.lua` | Browser "ADS Configuration": 4 tabs (Armor / Limbs WL / Weapons / General). |
 | `lua/weapons/gmod_tool/stools/ads_config.lua` | Stool de debug efímero (no toca el JSON). |
