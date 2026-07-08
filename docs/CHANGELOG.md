@@ -56,6 +56,257 @@ tab Weapons + fallback inline `inline_arc9`. Detalle: arquitectura §18.
 
 ---
 
+## PARCHES DE sesión Energy Shields — Bloque C: UI completa — 2026-07-07
+
+Sesión de diseño: capa de configuración de Energy Shields en todas las superficies de
+UI existentes, calcando patrones del árbol (filas manuales `manualRow`/
+`StyleManualSlider`, nunca DNumSlider en scroll; payload piggyback en
+`wl_add_batch`; badges de la tab Weapons). La columna y el copy leen el **cache del
+whitelist** que ya llega completo por `ads_send_lists` — cero red nueva. Primer
+precedente de `DColorMixer` en el addon (shield_color).
+
+- PARCHE 1 — Columna "Shd" (`cl_ads_browser.lua`): header `cols` (+entrada x=555) y
+  `row.PaintOver` (badge `[SHD]` cian cuando `Whitelist[class].shield_type` existe).
+  **[APLICADO 2026-07-07]** — verificado en juego.
+
+- PARCHE 2 — Tab "Energy Shield" (`cl_ads_browser.lua`, `BuildShieldTab` + 6º sheet en
+  `BuildRightPanel`): checkbox master "Enable Energy Shield on whitelist"
+  (client-only, decide si el payload lleva campos — apagado, re-whitelistear LIMPIA
+  el escudo: advertido en el label), combo de tipo poblado lazy desde
+  `ADS_ShieldFX.Types` (degrada a lista mínima si falta el archivo), filas manuales
+  Shield HP [1,5000] / Regen delay [0,60] / Regen rate [0.1,1000], checkbox Can
+  Regenerate, checkbox "Use type default color" + `DColorMixer` sin alpha (descarta
+  `a`), botón Reset con defaults del tipo (espejo `CLIENT_SHIELD_DEFAULTS`); campos
+  `shield_*` en `ADS_Browser.Template` (+"Reset All" del tab General) y en el payload
+  de "Whitelist Selected"; `CopyFromClass` copia el escudo del entry (sin resetear
+  valores si la clase no trae; `shield_enabled` refleja al copiado) + refresh in-place
+  vía `ADS_Browser.ShieldTabRefresh`. **[APLICADO 2026-07-07]** — verificado en juego
+  (batch a 2 clases, `[SHD]` en filas, doble-clic puebla el tab). Fix pre-verificación
+  (2026-07-07): los setters
+  de los 3 sliders llamaban `SetSlideX` → `OnValueChanged` → setter en bucle (stack
+  overflow que abortaba `Open()` entero, browser vacío) — guard de reentrada
+  `shdUpdating`, el mismo patrón `durUpdating` del tab Armor. Ajustes de la ronda 1
+  de verificación (2026-07-07): texto informativo al gris legible del tab Scavenger
+  (210,210,210) y combo de tipos con nombres bonitos vía `label` del registry
+  ("Spartan" / "Elite Sangheili" / "HEV" — la key interna no cambia).
+  **[APLICADO 2026-07-07]** — verificado en juego (batch, doble-clic, flags, browser,
+  toolgun).
+
+- PARCHE 3 — Flags en la tab Weapons (`cl_ads_browser.lua`): checkboxes "Plasma (extra
+  shield drain)" / "EMP (shield collapse + lockout)" en el editor (se cargan de la
+  entrada curada, viajan en `ads_save_curated` como `or nil`, "Reset to Fallback" los
+  limpia), badges `P` (cian) / `E` (amarillo) per-row, nota EFT ampliada ("flags
+  always apply"). **[APLICADO 2026-07-07]** — verificado en juego (cubre además la
+  prueba empírica de plasma/emp arrastrada del Bloque A: drain ×2 con plasma,
+  colapso+lockout con emp).
+
+- PARCHE 4 — Página Q "Energy Shield Settings" (`cl_ads.lua`, 5ª entrada del menú):
+  toggles `ads_shield_enabled`/`_sounds`/`_fx_bubble`/`_fx_particles` + sliders
+  `_damage_mult`/`_plasma_mult`/`_emp_lockout`/`_think_interval` (este último pasó a
+  `FCVAR_REPLICATED` en `ads_shields.lua` para que el slider funcione) + Reset con
+  `Derma_Query`. **[APLICADO 2026-07-07]** — verificado en juego.
+
+- PARCHE 5 — Toolgun inspect (`ads_config.lua`): bloque "--- Energy Shield ---" en el
+  dump de consola de `ads_inspect_result` (type/state/pool/regen/regen_in/lockout_in
+  — el lado server ya existía desde el Bloque A). **[APLICADO 2026-07-07]** —
+  verificado en juego.
+
+Verificación en juego (Bloque C): configurar elite/120 HP/color custom/delay 8/rate 25
+→ "Whitelist Selected" sobre 2 clases → `[SHD]` en ambas filas, JSON con los campos, y
+NPCs respawneados con esos valores (`ads_shield_status`); doble-clic sobre una de esas
+clases puebla el tab Energy Shield (y sobre una clase sin escudo apaga el checkbox sin
+tocar los valores); re-whitelistear con el checkbox off quita `[SHD]` y el escudo vivo;
+flags plasma/emp desde la tab Weapons (badges P/E + drain ×2 / colapso con lockout —
+cubre la prueba empírica pendiente del Bloque A); página Q operando en vivo (p.ej.
+`ads_shield_damage_mult 5`); toolgun R muestra el bloque Energy Shield.
+
+---
+
+## PARCHES DE sesión Energy Shields — fixes de verificación del Bloque B — 2026-07-07
+
+Sesión de fixes: 3 bugs + 1 ajuste reportados por el autor al verificar el Bloque B en
+juego (enfrentamientos grandes, ~6 NPCs con escudo, FPS bajos).
+
+- PARCHE 1 — Burbuja en T-pose lejos del modelo (`cl_ads_shields.lua`): con lag o
+  dormancy el `SetParent` de la copia clientside se rompe y queda huérfana en T-pose
+  hasta la muerte del NPC. Fix: re-afirmar `SetPos`/`SetParent`/`EF_BONEMERGE` **cada
+  frame** (patrón del mod original, que hacía exactamente eso en su Think) + NPC
+  dormant → burbuja oculta y sin attaches de partículas. **[PENDIENTE]**
+
+- PARCHE 2 — Sonido de carga sobrevive a la muerte y salta al próximo NPC
+  (`ads_shields.lua`): si el NPC muere y se remueve en el mismo tick, la purga del
+  Think no llega a cortar el loop, y Source REUTILIZA el índice de entidad → el sonido
+  quedaba pegado al índice y lo heredaba el siguiente spawn (hasta un clear total).
+  Fix: `StopChargeSound` con la entidad AÚN VÁLIDA en `OnNPCKilled` (hook nuevo) y en
+  `EntityRemoved`. **[PENDIENTE]**
+
+- PARCHE 3 — Anillo del HEV ladeado ~45° (`cl_ads_shields.lua`): la normal se calculaba
+  del centro del NPC al punto de impacto (hit al pecho alto → componente vertical).
+  Fix: normal aplanada (`z=0`, guard contra vector cero) → perpendicular horizontal al
+  disparo, como el Goofy original (que usaba el eje atacante→víctima). **[PENDIENTE]**
+
+- PARCHE 4 — Tesla del colapso HEV −25% (`cl_ads_shields.lua`): `SetScale`/
+  `SetMagnitude` 1→0.75 y `SetRadius` 1000→750 (pedido del autor). **[PENDIENTE]**
+
+---
+
+## PARCHES DE sesión Energy Shields — Bloque B: efectos visuales cliente — 2026-07-07
+
+Sesión de diseño: Capa 3 del diseño de Energy Shields — assets visuales rescatados del
+mod Halo, burbuja clientside, partículas por tipo y consumo de los one-shots net PVS
+que el motor ya emitía desde el Bloque A. Incluye el fix del defecto de sonido
+detectado en la verificación del Bloque A: los `recharge_*.wav` traen **loop embebido**
+(cue de Source) y el motor los emitía como one-shot al COMPLETAR la carga → quedaban
+sonando para siempre. Ahora son sonido de **carga**: arrancan al entrar a CHARGING con
+pitch estirado al tiempo real de recarga (`SoundDuration`/tiempo restante, clamp
+[30,255]) y se cortan con `StopSound` en TODA salida de CHARGING (completar, hit que
+interrumpe, EMP, muerte, remove) — centralizado en `SetState`.
+
+- PARCHE 1 — Fix sonido de carga (`ads_shields.lua`): registry `restore` →
+  `charge` para spartan/elite; hev gana `charge` (hum `items/suitcharge1.wav`) y
+  conserva `restore` (ding `suitchargeok1.wav`); helpers `StartChargeSound` (pitch
+  estirado) / `StopChargeSound` integrados en `SetState` + `RemoveShield` + purge de
+  muerte del Think; precache del campo `charge`. **[APLICADO 2026-07-07]** — verificado:
+  el sweep acompaña la carga y cesa al completar. Bug residual encontrado en la
+  verificación: si el NPC muere recargando, el loop sobrevive y SALTA al próximo NPC
+  spawneado (Source reutiliza el índice de entidad) — corregido en la sesión de fixes.
+
+- PARCHE 2 — Assets visuales + registro + créditos: 2 `.pcf` a `particles/` y 25
+  vmt/vtf a `materials/models/shield/` + `materials/effects/shield/` (rutas
+  originales — están horneadas dentro de los pcf y del material de la burbuja;
+  colisión con el mod original montado = contenido idéntico, inofensiva);
+  `ads_shared.lua` con `game.AddParticles` ×2 + `PrecacheParticleSystem` ×12
+  (sets spartan/elite/custom); README: créditos obligatorios (§0 del diseño) a
+  Speedy Von Gofast y sora1d + bullet de características. **[APLICADO 2026-07-07]** —
+  verificado en juego (partículas y sonidos operativos en los tres tipos).
+
+- PARCHE 3 — Capa de efectos (`cl_ads_shields.lua`, archivo NUEVO): registry espejo
+  `ADS_ShieldFX.Types` (MISMAS keys que `ADS.ShieldTypes`); receptor `ads_shield_fx`
+  (1=hit flash + partícula de impacto en el punto real, 2=colapso `deplete` — hev:
+  `selection_ring`/20× `TeslaHitBoxes`, 3=pop de restauración); burbuja =
+  `ClientsideModel` bonemergeada (material aditivo elite, `RENDERMODE_GLOW`,
+  `ManipulateBoneScale` 1.05+swell al colapsar, alpha decayendo desde el último
+  evento, color por NWVector con fallback al tipo); Think cliente único con early-out
+  (arcs persistentes en DOWN vía `ParticleEffectAttach`/`StopParticlesNamed`, loop
+  visual de recarga re-attach cada 0.7 s en CHARGING, purga por estado 0/inválidos);
+  cleanup en `EntityRemoved`; convars cliente `ads_shield_fx_bubble` /
+  `ads_shield_fx_particles`. Estado FX lazy per-NPC (late-joiner ve burbuja/estado
+  correcto vía NWVars; arcs recién desde su próximo evento — limitación aceptada).
+  **[APLICADO 2026-07-07]** — verificado en juego. 2 bugs encontrados (burbuja en
+  T-pose lejos del modelo tras enfrentamientos grandes/bajos FPS; anillo del HEV
+  ladeado ~45°) + 1 ajuste pedido (Tesla del HEV −25%) — corregidos en la sesión
+  de fixes.
+
+- PARCHE 4 — Color custom en partículas (mejor esfuerzo): con `shield_color` distinto
+  al default del tipo se intenta el set colorable `spdy_halo_3_custom_*`
+  (`CreateParticleSystem` + control point 1 = RGB normalizado) con fallback automático
+  al set del tipo. **[PENDIENTE]** — verificar si el CP1 tiñe; si no responde, queda
+  como deuda cosmética en `ads_estado.md` (la burbuja tintada por `SetColor` es la
+  garantía mínima; precedente: decal overlay del Block FX). **[APLICADO —
+  CERRADO COMO DEUDA COSMÉTICA 2026-07-07]**: ronda 1, la burbuja tiñe bien; las
+  partículas caían al set del tipo. Se reintentó con `CreateParticleSystemNoEntity` +
+  CP1 en rango 0-255 (los sistemas `custom_*` SÍ existen en el pcf, confirmado por
+  strings) — verificación del autor tras el reintento: sigue sin teñir. Diagnóstico
+  final: `spdy_halo_3_custom_*` son visualmente **idénticos** a los sets spartan/elite
+  con el color horneado a mano en el propio pcf (por eso el autor original los separó
+  en sistemas distintos en vez de parametrizarlos) — no responden a ningún control
+  point de color en runtime. Requeriría reeditar el pcf en el editor de partículas de
+  Source (fuera de alcance de este plan). Se acepta la burbuja tintada como única
+  garantía de color custom; ver deuda en `ads_estado.md`.
+
+Verificación en juego (Bloque B): spartan dorado — flash al hit con partícula en el
+punto de impacto, estallido + arcs persistentes al colapsar, loop visual + sonido de
+carga que CESA al completar, pop al restaurar; elite azul; hev ring+Tesla sin burbuja;
+`shield_color` custom por JSON (¿partículas tintadas o fallback?); toggles
+`ads_shield_fx_bubble 0` / `ads_shield_fx_particles 0` apagan cada capa; segundo
+cliente fuera de PVS no recibe eventos y al reconectar ve el estado correcto. Pendiente
+arrastrado del Bloque A: prueba empírica de flags `plasma`/`emp`.
+
+---
+
+## PARCHES DE sesión Energy Shields — Bloque A: motor mecánico server — 2026-07-07
+
+Sesión de diseño: primera entrega de la funcionalidad **Energy Shields** (diseño cerrado
+en [`ADS_EnergyShields_Arquitectura.md`](ADS_EnergyShields_Arquitectura.md); materializa
+el tramo `[7]` del roadmap; plan por bloques A/B/C/D aprobado por el autor). Capa
+pre-filtro de **pool global** delante de la armadura zonal: `Hit → ESCUDO → ARMADURA →
+LIMBS`, no-overflow canon (absorción total = early-return del hook: la armadura no gasta
+durabilidad y `ProcessLimbHit` no corre → cero debuffs con escudo arriba), bypass melee
+por damage type (`DMG_CLUB`/`DMG_SLASH`, que SÍ resetean la regen), flags de arma
+`plasma`/`emp` curados a mano, recarga server-only sin tráfico de red (Think único patrón
+scavenger + NWVar de estado on-change + one-shots net PVS). Decisión del autor:
+`shield_max_hp` = **valor fijo en HP** (no fracción estilo limbs). Bloque A = slice
+mecánico completo verificable sin UI (`ads_shield_give` o JSON a mano); efectos visuales
+cliente → Bloque B; UI → Bloque C. Assets/concepto rescatados de "Halo Energy Shield"
+(Speedy Von Gofast) y "Goofy Armor Effect" (sora1d) — créditos a README en Bloque B.
+
+- PARCHE 1 — Motor (`ads_shields.lua`, archivo NUEVO): registry `ADS.ShieldTypes`
+  (spartan/elite/hev — hev 100% built-in engine, sin assets), convars
+  `ads_shield_enabled`/`_damage_mult`/`_plasma_mult`/`_emp_lockout`/`_sounds`/
+  `_think_interval`; `InitShield` idempotente (autoridad = `shield_type` en el whitelist
+  entry, registro diferido 0.4 s) + `RemoveShield`; `ProcessShield` (drain global único,
+  EMP = colapso + lockout, bypass melee) + `ShieldWillAbsorb` (consulta pura);
+  NWVars `ADS_Shield_State/Type/Color` on-change; Think único de recarga sobre registry
+  `ShieldNPCs` (estados UP/DOWN/CHARGING, `can_regen=false` queda caído); `EmitShieldFX`
+  (net `ads_shield_fx` con `AddPVS`, throttle 1 hit-flash/frame); `PlayShieldSounds`
+  por tier de drain; `RefreshShieldsForClass`/`RefreshAllShields`; concommands admin
+  `ads_shield_give`/`ads_shield_clear`/`ads_shield_status`. **[APLICADO 2026-07-07]** —
+  verificado en juego por el autor. Defecto detectado en la verificación: el sonido de
+  recarga quedaba loopeando para siempre (wav con loop embebido, emitido como one-shot
+  al completar) — corregido en la sesión Bloque B, PARCHE 1.
+
+- PARCHE 2 — Enganche (`ads_core.lua`): call site de `ProcessShield` al tope de
+  `ScaleNPCDamage` (antes del guard de armadura; cubre los 3 paths — el dmginfo aún trae
+  el daño crudo), con supresión de sangre vía `ApplyBlockedHitFX(..., bloodOnly=true)`
+  (6º parámetro nuevo retrocompatible: sin chispa ni decal de armadura), descarte
+  defensivo del `ADS_ArmorStash` fresco y early-return; línea `[shield]` en la traza
+  tier 1/2 (+ nota `shd=bypass|down` en hits que pasan); `AddNetworkString
+  "ads_shield_fx"`; refresh de escudos vivos tras `wl_add`/`wl_del`/`bl_add`/batches
+  (`ads_modify_list`) y tras `reload`/`clear_wl` (`ads_admin_action`); bloque `i.shield`
+  en `ADS.InspectNPC` (el print cliente del toolgun llega en Bloque C — mientras tanto
+  `ads_shield_status`). **[APLICADO 2026-07-07]** — verificado en juego.
+
+- PARCHE 3 — Detour ARC9 shield-aware (`ads_core.lua`): con escudo arriba
+  (`ShieldWillAbsorb`), el detour corta `penleft = 0` y retorna SIN resolver armadura ni
+  depositar stash (la placa no participa; el round no sigue penetrando geometría —
+  consistente con no-overflow). Traza tier 3 `[ADS DET] SHIELD-STOP`. El drain real
+  ocurre siempre en `ScaleNPCDamage` (una sola autoridad). Caso borde esperado:
+  perdigones interlaceados de escopeta contra escudo casi caído → `path=inline_arc9`
+  ocasional (daño correcto, solo pierde el hitPos del trace). **[APLICADO 2026-07-07]** —
+  verificado en juego.
+
+- PARCHE 4 — Saneamiento/persistencia (`ads_core.lua` `Sanitize`): campos `shield_type`
+  (gate maestro contra el registry; inválido → se descartan todos los `shield_*`),
+  `shield_max_hp` (int [1,5000]), `shield_color` ({r,g,b} [0,255]),
+  `shield_recharge_delay` ([0,60] 1dp), `shield_recharge_rate` ([0.1,1000] 1dp HP/s),
+  `shield_can_regen` (bool, `false` legítimo — resolver con `~= nil`). Viajan en los
+  payloads existentes de `wl_add`/`wl_add_batch` y persisten solos vía `SaveConfig`
+  (cero cambios en Save/LoadConfig). **[APLICADO 2026-07-07]** — verificado en juego
+  (JSON a mano + reload).
+
+- PARCHE 5 — Flags plasma/emp backend (`ads_armor.lua` `SanitizeCuratedWeapon`): campos
+  opcionales `plasma`/`emp` (solo persistidos si `true`) en la entrada curada; extractor
+  y resolver intactos (los flags los lee `ProcessShield` directo de
+  `ADS.CuratedWeapons`, independiente del tuple → una entrada con flags jamás shadowea
+  el branch EFT). **[APLICADO 2026-07-07]** — código en el árbol; la prueba empírica de
+  `plasma`/`emp` en juego quedó pendiente del autor (ver `ads_estado.md`).
+
+- PARCHE 6 — Assets de sonido: 26 wav rescatados del mod Halo a `sound/ads/shield/`
+  ({light|medium|heavy}/hit1-7, break1-3, recharge_spartan, recharge_elite — lowercase,
+  precache en carga). HEV sin assets. **[APLICADO 2026-07-07]** — verificado en juego
+  (hits/break OK; los recharge_* pasan a ser sonido de CARGA en el Bloque B).
+
+Verificación en juego (Bloque A, `ads_debug 2`): `ads_shield_give spartan 70` → print
+`[shield]` con drain/pool y HP+limbs intactos; colapso (`reason=break` + sonido) y el
+siguiente disparo vuelve a `path=inline…`; recarga con dprints charging/full y
+`ads_shield_status`; crowbar bypassa pero re-estira `regen_in`; ARC9 con `ads_debug 3` →
+`SHIELD-STOP` sin stash y durabilidad de placa intacta; sangre suprimida en hit absorbido
+(sin chispa/decal); JSON a mano (`shield_type`) + `reload` → escudo por clase; flags
+`plasma`/`emp` en una entrada curada → drain ×2 / colapso+lockout; `shield_type` basura →
+warning sin errores lua.
+
+---
+
 ## PARCHES DE sesión Block FX — feedback visual de bloqueo — 2026-07-07
 
 Sesión de diseño: cuando la armadura zonal BLOQUEA un balazo (invariante

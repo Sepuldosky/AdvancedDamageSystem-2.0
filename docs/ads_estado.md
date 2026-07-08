@@ -57,6 +57,16 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
 - **Block 7 — Weapon Penetration Modifier:** tabla curada abierta a cualquier base,
   Ammo Fallback editable (6 buckets), tab Weapons, contrato de red completo. **Código
   aplicado** (presente en `ads_armor.lua` / `ads_core.lua` / `cl_ads_browser.lua`).
+- **Energy Shields — completo, Bloques A/B/C (verificado 2026-07-07):** pool global
+  pre-armadura (`Hit → ESCUDO → ARMADURA → LIMBS`, `ads_shields.lua`), no-overflow
+  canon, bypass melee (`DMG_CLUB`/`DMG_SLASH`), recarga server-only sin red (Think
+  patrón scavenger + NWVars on-change), `SHIELD-STOP` en el detour ARC9, flags
+  `plasma`/`emp` curados (drain ×2 / colapso+lockout, verificado), tipos
+  spartan/elite/hev con burbuja bonemergeada + partículas (`cl_ads_shields.lua`) +
+  sonido de carga con pitch estirado, UI completa (columna `[SHD]`, tab Energy
+  Shield con `DColorMixer`, flags en tab Weapons, página Q, inspect del toolgun).
+  Diseño: `ADS_EnergyShields_Arquitectura.md`; tramo `[7]` del roadmap materializado;
+  créditos en README (Speedy Von Gofast, sora1d).
 
 ## Pendiente de verificar en juego
 
@@ -84,6 +94,12 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
 
 ## Remanentes / deuda conocida
 
+- **Energy Shields — partículas colorables no tiñen:** `shield_color` custom tiñe
+  bien la burbuja (`SetColor`), pero las partículas `spdy_halo_3_custom_*` quedan con
+  el color horneado del set spartan/elite (visualmente idénticas a los sets normales,
+  solo separadas en sistemas distintos). No responden a ningún control point de color
+  en runtime. Requeriría reeditar el `.pcf` en el editor de partículas de Source —
+  fuera de alcance. La burbuja tintada es la única garantía de color custom hoy.
 - **Block FX — decal overlay inerte:** el decal `ADS_Ricochet` (registro en
   `ads_shared.lua`, rama 3 de `ApplyBlockedHitFX`) no llega a verse sobre el modelo
   del NPC aun tras corregir el filtro de `util.Decal` — el gunshot de flesh queda

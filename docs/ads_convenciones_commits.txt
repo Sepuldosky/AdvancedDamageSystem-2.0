@@ -92,6 +92,13 @@ siempre entre paréntesis. Para ADS 2.0, los alcances definidos son:
   scavenger:
     Módulo de recogida de armas por NPCs (ads_scavenger.lua).
 
+  shields:
+    Escudos de energía (ads_shields.lua, cl_ads_shields.lua): pool global
+    pre-armadura, registry de tipos, Think de recarga, burbuja/partículas/
+    sonidos de la capa de efectos, flags plasma/emp de arma. Abarca el flujo
+    server + client + tab Energy Shield del browser cuando el cambio es
+    transversal a esa feature.
+
   weapons:
     Modificador de penetración por arma: curated weapons y ammo fallback
     (Block 7). Abarca el flujo server + tab Weapons del browser cuando el
@@ -153,6 +160,6 @@ en cada commit, se recomienda el uso de herramientas integradas en VSCode:
 
 =====================================================
 Documentos complementarios:
-  docs/ADS_2_0_Architecture_updated.md   → arquitectura autocontenida (§1-§18)
+  docs/ADS_2_0_Architecture_updated.md   → arquitectura autocontenida (§1-§19)
   CLAUDE.md                              → guía operativa para asistencia con Claude Code
 =====================================================

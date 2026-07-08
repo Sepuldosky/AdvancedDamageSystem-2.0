@@ -24,6 +24,7 @@
 16. [Block 5.2 — Armor Tab: refactor a silueta clickeable](#16-block-52--armor-tab-refactor-a-silueta-clickeable)
 17. [Sesión — UI Cleanup: Dur Max global, Inspect extendido, Toolgun debug puro, Rename](#17-sesión--ui-cleanup-dur-max-global-inspect-extendido-toolgun-debug-puro-rename)
 18. [Block 7 — Weapon Penetration Modifier: Curated Weapons + Ammo Fallback](#18-block-7--weapon-penetration-modifier-curated-weapons--ammo-fallback)
+19. [Block 8 — Energy Shields](#19-block-8--energy-shields)
 
 ---
 
@@ -37,8 +38,11 @@ Siete archivos Lua en el proyecto. Leer con `view` cuando se necesite; las descr
 | `ads_armor.lua` (server) | Extractor + Resolver puros. Tablas estáticas de materiales, ammo fallback (editable, ver §18), curated weapons (cualquier classname, ver §18). Init NWvars por zona. **Block 1 completo.** |
 | `ads_limbs.lua` (server) | Subsistema de HP por extremidad: pools head/arms/legs, debuffs, drop de arma, stun, healing API |
 | `ads_scavenger.lua` (server) | NPCs recogen armas del suelo |
+| `ads_shields.lua` (server) | Escudos de energía: pool global pre-armadura, registry de tipos, Think de recarga (ver §19) |
+| `ads_shared.lua` (ambos realms) | Registro compartido: decal de Block FX, partículas del escudo (ver §19) |
 | `cl_ads.lua` (client) | Paneles del menú Q |
-| `cl_ads_browser.lua` (client) | Browser visual "ADS Configuration": 4 tabs (Armor/Limbs WL/Weapons/General), modelo de template, Copy Selected, doble-click, batch actions |
+| `cl_ads_browser.lua` (client) | Browser visual "ADS Configuration": 6 tabs (Armor/Limbs WL/Weapons/Energy Shield/Scavenger/General), modelo de template, Copy Selected, doble-click, batch actions |
+| `cl_ads_shields.lua` (client) | Capa de efectos del escudo: burbuja, partículas, sonidos de UI (ver §19) |
 | `ads_config.lua` (toolgun) | Stool de debug puro: M1 aplica armor/limbs per-entity efímero, M2 copia de NPC, Reload inspecciona. Refactor completo, ver §17. |
 
 **Regla cardinal:** la lógica de armadura ADS 2.0 es un **pre-filtro** que se sienta delante de `ads_limbs`. El pool de HP de extremidades **no se modifica** para compensar el blindaje. Los cambios a `ads_limbs` son los mínimos descritos en §9.
@@ -932,4 +936,101 @@ Si un NPC dispara ARC9 (scavenger o `arc9_givenpcweapon`) y el detour de `AfterS
 
 ---
 
- Refleja: editor de zonas por hitgroup, modelo de template con Copy Selected y doble-click, 4 tabs (Armor/Limbs-WL/Weapons/General), batch apply de armor, idempotencia de `InitArmorNWvars`, fix de overflow de catalog_state, refactor del Armor tab a silueta clickeable, toolgun refactorizado a debug puro, inspect extendido, rename a "ADS Configuration", Weapon Penetration Modifier (tabla curada abierta + Ammo Fallback editable), y diseños diferidos (Block 6, Front 4, probe de hitgroups, armadura de jugador, migración pendiente de `MakeSlider`/Limbs-WL).*
+## 19. Block 8 — Energy Shields
+
+### Motivación
+
+Materializa el tramo `[7]` del roadmap ("perfiles condicionales runtime + escudos recargables") con un diseño propio, cerrado en `ADS_EnergyShields_Arquitectura.md` y elevado durante la implementación de "zona-escudo que se resuelve antes de la placa física" a **pool global por NPC** (no zonal). Concepto y assets rescatados de dos mods deprecados (2022) con permiso de sus autores — créditos en README:
+
+- **Speedy Von Gofast** — *Halo Energy Shield*: burbuja, partículas, sonidos de hit/colapso/recarga.
+- **sora1d** — *Goofy Armor Effect*: base del tipo HEV (efectos 100% built-in del engine).
+
+El wiring de red de ambos mods era single-target (armadura HL2 del jugador); se reescribió multi-NPC desde cero (§ Red, abajo).
+
+### Modelo de daño
+
+```
+Hit → ESCUDO (pool global) → ARMADURA (zonal, aquí sí penetración) → LIMBS
+```
+
+Diferencia clave con la armadura: el escudo es **un solo pool** por NPC, no por zona. No conoce penetración — un único `shield_damage_mult` global (+ factor `plasma` global) decide cuánto drena un hit. **No-overflow canon:** un hit que revienta el escudo se consume **completo**; el exceso no pasa a la armadura en ese mismo impacto. Bypass por damage type — `DMG_CLUB`/`DMG_SLASH` saltan el pool y van directo a armadura/limbs, pero **sí** resetean el timer de recarga (cualquier daño frena la regen, canon).
+
+### Stack de 3 capas
+
+1. **Motor mecánico** (`ads_shields.lua`, server): pool, drain, recarga, bypass, EMP, colapso. Idéntico para todos los tipos.
+2. **Registry de tipos** (`ADS.ShieldTypes`, en `ads_shields.lua`): tabla `{ defaults, color, sounds }` por tipo (`spartan`/`elite`/`hev`). Agregar un escudo = una entrada nueva acá.
+3. **Capa de efectos** (`cl_ads_shields.lua`, client): burbuja + partículas por tipo, registry espejo `ADS_ShieldFX.Types` (**mismas keys** que `ADS.ShieldTypes`) con los parámetros visuales (material, sistemas de partícula, flag `builtin` para HEV).
+
+### API del motor
+
+```lua
+-- ads_shields.lua
+-- absorbed=true  → hit consumido ÍNTEGRO (no-overflow). di:SetDamage(0) ya aplicado;
+--                  el caller (ScaleNPCDamage) DEBE early-return del hook.
+-- absorbed=false → el hit pasa entero (bypass / escudo caído / sin escudo / dmg<=0 / off)
+-- trace = { reason="absorbed"|"break"|"emp"|"bypass"|"down", hpBefore, hpAfter, drain, plasma } | nil
+function ADS.ProcessShield(npc, hg, di)
+function ADS.ShieldWillAbsorb(npc, di)          -- consulta pura, usada por el detour ARC9
+function ADS.InitShield(npc) / ADS.RemoveShield(npc)
+function ADS.RefreshShieldsForClass(classname) / ADS.RefreshAllShields()
+```
+
+Orden interno de `ProcessShield`: off/sin-escudo/dmg≤0 → pasa sin trace; bypass → resetea regen, pasa; flags de arma (lookup en `ADS.CuratedWeapons[wep:GetClass()]`, **independiente del tuple del extractor** — un arma EFT conserva su Branch-1 intacto); escudo caído → pasa (EMP igual extiende el lockout); EMP con escudo arriba → colapso instantáneo + lockout; drain normal → `dmg * ads_shield_damage_mult * (plasma and ads_shield_plasma_mult or 1)`, sonido/FX por resultado, `di:SetDamage(0)`.
+
+### Enganche en el pipeline de daño
+
+Call site único al tope de `ScaleNPCDamage` (`ads_core.lua`), **antes** del guard de armadura — en ese punto `dmginfo` aún trae el daño crudo en los 3 paths de resolución de armadura (stash ARC9 / inline_arc9 / inline VJ-HL2-TFA), así que un solo `ADS.ProcessShield` los cubre todos. Si absorbe: `ADS.ApplyBlockedHitFX(npc, di, hg, nil, nil, true)` (6º parámetro `bloodOnly` nuevo — solo supresión de sangre, sin chispa ni decal de armadura, porque el escudo tiene su propio flash de energía), se descarta cualquier `npc.ADS_ArmorStash` fresco (defensivo), y el hook hace **early return** — la armadura no gasta durabilidad y `ProcessLimbHit` no corre (cero debuffs con escudo arriba, consecuencia gratis del no-overflow).
+
+**Detour ARC9 (`ads_core.lua`, `AfterShotFunction`):** con `ADS.ShieldWillAbsorb(ent, dmg) == true`, el detour corta `penleft = 0` y retorna **sin** resolver armadura ni depositar stash — la placa no participa y el round no sigue penetrando geometría. El drain real ocurre siempre en `ScaleNPCDamage` (única autoridad); el detour solo predice. Entre detour y hook nada regenera (la regen es Think), así que la predicción coincide — salvo perdigones de escopeta interlaceados contra un escudo casi caído, donde un perdigón puede caer a `path=inline_arc9` (daño correcto, solo pierde el hitPos del trace de debug).
+
+### Red — reparto multi-NPC
+
+Regla madre: la recarga no genera tráfico. El servidor simula con un **Think único** sobre un registry `ShieldNPCs = {}` (calco exacto del patrón `ScavengerNPCs` de `ads_scavenger.lua`: early-out si vacío, purge inline de inválidos/muertos, throttle per-NPC vía `ads_shield_think_interval`).
+
+| Canal | Contenido | Cuándo cruza la red |
+|---|---|---|
+| NWInt `ADS_Shield_State` | 0=sin escudo, 1=UP, 2=DOWN, 3=CHARGING | Solo on-change (replica de GMod nativa) |
+| NWString `ADS_Shield_Type` | key del registry | Una vez, en `InitShield` |
+| NWVector `ADS_Shield_Color` | color resuelto (override o default del tipo) | Una vez, en `InitShield` |
+| net `ads_shield_fx` | `WriteUInt(ev,2)` + entidad + (`WriteVector` si ev=1 hit) | One-shot con `CRecipientFilter:AddPVS` — nunca broadcast. ev: 1=hit_flash, 2=collapse, 3=restore |
+
+Único evento de recarga que cruza la red: el flip NWVar `CHARGING→UP` al completar (+ el one-shot `ev=3`). Sonidos del motor van por `EmitSound` server-side (atenuación/PVS gratis del engine, sin payload extra).
+
+### Data model — campos per-NPC (whitelist entry)
+
+Cuelgan del mismo entry que los campos de limbs (`ADS.UserWhitelist[classname]`), saneados en `Sanitize()` (`ads_core.lua`) y persistidos gratis por `ADS.SaveConfig` (whitelist ya se serializa entero):
+
+| Campo | Tipo | Clamp | Nota |
+|---|---|---|---|
+| `shield_type` | string | key válida de `ADS.ShieldTypes` | **Gate maestro**: inválido/ausente → se descartan TODOS los `shield_*` (sin escudo) |
+| `shield_max_hp` | int | `[1, 5000]` | **Valor fijo en HP** — decisión del autor; no sigue la convención de fracción de limbs |
+| `shield_color` | `{r,g,b}` | ints `[0,255]` | opcional → color default del tipo |
+| `shield_recharge_delay` | float | `[0,60]`, 1dp | segundos sin daño antes de empezar a cargar |
+| `shield_recharge_rate` | float | `[0.1,1000]`, 1dp | HP por segundo |
+| `shield_can_regen` | bool | — | `false` es valor legítimo — resolver con `~= nil`, nunca con `or` |
+
+Flags de arma (`ADS.CuratedWeapons[classname]`, saneados en `ADS.SanitizeCuratedWeapon`): `plasma` (bool) y `emp` (bool), curados a mano — no existen en ninguna base de armas, ni EFT ni no-EFT. Solo se persisten si son `true`. Se leen aparte del tuple balístico (`ProcessShield` los busca directo en `ADS.CuratedWeapons`), así una entrada con flags **nunca** shadowea el branch EFT del extractor.
+
+### Convars globales
+
+`ads_shield_enabled` (1), `ads_shield_damage_mult` (1.0), `ads_shield_plasma_mult` (2.0), `ads_shield_emp_lockout` (8.0 s), `ads_shield_sounds` (1), `ads_shield_think_interval` (0.1 s) — todas `FCVAR_REPLICATED+ARCHIVE` (patrón estándar del addon, necesario para que los sliders de `cl_ads.lua` funcionen). Cliente: `ads_shield_fx_bubble` / `ads_shield_fx_particles`.
+
+### UI
+
+Browser (`cl_ads_browser.lua`): columna `[SHD]` en la lista (lee `ADS_Browser.Whitelist[class].shield_type` del cache de `ads_send_lists` — **cero red nueva**); tab "Energy Shield" con checkbox master, combo de tipo (labels bonitos: "Spartan" / "Elite Sangheili" / "HEV" — la key interna no cambia), filas manuales de HP/delay/rate (patrón `manualRow`/`StyleManualSlider`, con guard de reentrada contra el stack overflow de `SetSlideX`↔`OnValueChanged`), `DColorMixer` (primer precedente en el addon) con checkbox "usar color default"; flags plasma/EMP como checkboxes en la tab Weapons (badges `P`/`E`). Menú Q: página "Energy Shield Settings" con los toggles/sliders globales. Toolgun: bloque "Energy Shield" en el inspect.
+
+### Casos borde resueltos
+
+- **Perdigones ARC9 interlaceados** contra un escudo casi caído: un perdigón puede resolver por `inline_arc9` en vez de `stash` — daño correcto, degradación cosmética de trace únicamente.
+- **Orden de carga autorun**: `ads_core` (alfabético, antes) nunca asume que `ads_shields` existe — todo acceso cruzado (`ADS.ProcessShield`, `ADS.ShieldTypes` en `Sanitize`) está guardado en runtime.
+- **Hot-reload / `ads_admin_action reload`**: `RefreshAllShields()` re-inicializa todos los NPCs vivos contra el whitelist recién cargado.
+- **Burbuja en T-pose** (bug real, hallado en verificación): con lag/dormancy el `SetParent` de la copia clientside se rompía. Fix: re-afirmar `SetPos`/`SetParent`/`EF_BONEMERGE` cada frame + ocultar si el NPC está dormant.
+- **Sonido de carga que sobrevive a la muerte y salta al próximo NPC** (bug real): si el NPC muere y se remueve en el mismo tick, la purga del Think llegaba tarde y Source reutiliza el índice de entidad → el loop pasaba al siguiente spawn. Fix: `StopSound` en `OnNPCKilled` y `EntityRemoved`, con la entidad aún válida.
+
+### Deuda conocida
+
+Las partículas colorables `spdy_halo_3_custom_*` (existen en el pcf del mod Halo) no responden a ningún control point de color en runtime — son visualmente idénticas a los sets spartan/elite con el color horneado a mano, no parametrizadas. `shield_color` custom solo garantiza el tinte de la burbuja (`SetColor`); las partículas de un NPC con color custom se ven con el color por defecto del tipo. Reeditar el `.pcf` está fuera de alcance de este plan.
+
+---
+
+ Refleja: editor de zonas por hitgroup, modelo de template con Copy Selected y doble-click, 4 tabs (Armor/Limbs-WL/Weapons/General), batch apply de armor, idempotencia de `InitArmorNWvars`, fix de overflow de catalog_state, refactor del Armor tab a silueta clickeable, toolgun refactorizado a debug puro, inspect extendido, rename a "ADS Configuration", Weapon Penetration Modifier (tabla curada abierta + Ammo Fallback editable), Energy Shields (pool global pre-armadura, tipos spartan/elite/hev, UI completa — ver §19), y diseños diferidos (Block 6, Front 4, probe de hitgroups, armadura de jugador, migración pendiente de `MakeSlider`/Limbs-WL).*

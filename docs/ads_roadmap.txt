@@ -62,8 +62,14 @@ que lo caro. No es rígido: si un tramo destapa una dependencia, reordenar y ano
       Configuration. Cierra la regresión interina (jugadores sin armadura ADS).
 
   [7] Perfiles condicionales runtime + escudos recargables.
-      Trigger de batería/escudo en NWvar propia que swapea el tuple activo; zona-escudo
-      que se resuelve antes de la placa física.
+      - Escudos recargables: HECHO — Block 8 "Energy Shields" (2026-07-07), diseño
+        propio en ADS_EnergyShields_Arquitectura.md, elevado de "zona-escudo delante
+        de la placa" a pool GLOBAL por NPC con tipos spartan/elite/hev, red
+        server-simula/NWVar-estado/net-PVS-efectos, UI completa. Ver arquitectura §19.
+      - Perfiles condicionales runtime: PENDIENTE — trigger de batería en NWvar propia
+        que swapea el tuple de armadura activo (distinto del escudo: no es un pool
+        nuevo, es un cambio de perfil {clase, material, durMax} en runtime). No
+        cubierto por Block 8; sigue abierto para una sesión futura.
 
   [8] Afinar el kernel de penetración.
       Con datos del Excel de curvas EFT reales. Las 3 líneas del Paso 1 del resolver son

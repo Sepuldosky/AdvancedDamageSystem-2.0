@@ -144,6 +144,6 @@ Documentos complementarios:
   docs/ads_estado.md                     → foto de HOY
   docs/ads_roadmap.txt                   → rumbo / qué sigue
   docs/CHANGELOG.md                      → historial de parches
-  docs/ADS_2_0_Architecture_updated.md   → arquitectura de referencia (§1-§18)
+  docs/ADS_2_0_Architecture_updated.md   → arquitectura de referencia (§1-§19)
   docs/ads_convenciones_commits.txt      → convenciones de git commits
 =====================================================

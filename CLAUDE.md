@@ -16,7 +16,7 @@ Antes de tocar código, lee en este orden (los tres primeros son **docs vivos**)
 2. **Rumbo** → [`docs/ads_roadmap.txt`](docs/ads_roadmap.txt). Qué sigue y en qué orden. `estado` dice dónde estamos dentro de él.
 3. **Historial de parches** → [`docs/CHANGELOG.md`](docs/CHANGELOG.md). `[PENDIENTE]`/`[APLICADO YYYY-MM-DD]`, nunca se borra ni renumera.
 4. **Metodología de trabajo** → [`docs/ads_flujo_trabajo.txt`](docs/ads_flujo_trabajo.txt). Planificación densa por bloques, vertical slice, orden de ejecución de parches.
-5. **Arquitectura de referencia** (autocontenida, §1-§18) → [`docs/ADS_2_0_Architecture_updated.md`](docs/ADS_2_0_Architecture_updated.md). Diseño estable; se consulta por sección cuando se necesita.
+5. **Arquitectura de referencia** (autocontenida, §1-§19) → [`docs/ADS_2_0_Architecture_updated.md`](docs/ADS_2_0_Architecture_updated.md). Diseño estable; se consulta por sección cuando se necesita.
 6. **Convenciones de commit** → [`docs/ads_convenciones_commits.txt`](docs/ads_convenciones_commits.txt).
 
 ## Idioma
@@ -31,9 +31,11 @@ Comentarios y mensajes de commit en **español**; los `<tipo>` de commit van en 
 | `lua/autorun/server/ads_armor.lua` | **Funciones puras**: extractor + resolver. Tablas estáticas (materiales, ammo fallback, curated weapons). NWvars de armadura por zona. Sin hooks, sin call sites. |
 | `lua/autorun/server/ads_limbs.lua` | HP por extremidad: pools head/arms/legs, debuffs, drop de arma, stun, API de healing. |
 | `lua/autorun/server/ads_scavenger.lua` | NPCs recogen armas del suelo. |
-| `lua/autorun/ads_shared.lua` | Registro compartido (ambos realms): decals del addon (`game.AddDecal "ADS_Ricochet"`). |
+| `lua/autorun/server/ads_shields.lua` | Escudos de energía: pool global pre-armadura, registry de tipos (`ADS.ShieldTypes`), Think único de recarga (patrón scavenger). |
+| `lua/autorun/ads_shared.lua` | Registro compartido (ambos realms): decals del addon (`game.AddDecal "ADS_Ricochet"`), partículas del escudo (`game.AddParticles`). |
 | `lua/autorun/client/cl_ads.lua` | Paneles del menú Q (spawnmenu `Options`). |
-| `lua/autorun/client/cl_ads_browser.lua` | Browser "ADS Configuration": 4 tabs (Armor / Limbs WL / Weapons / General). |
+| `lua/autorun/client/cl_ads_browser.lua` | Browser "ADS Configuration": 6 tabs (Armor / Limbs WL / Weapons / Energy Shield / Scavenger / General). |
+| `lua/autorun/client/cl_ads_shields.lua` | Capa de efectos del escudo: burbuja bonemergeada, partículas por tipo (`ADS_ShieldFX.Types`), receptor `ads_shield_fx`. |
 | `lua/weapons/gmod_tool/stools/ads_config.lua` | Stool de debug efímero (no toca el JSON). |
 
 ## Contratos que no debes romper
@@ -43,6 +45,9 @@ Comentarios y mensajes de commit en **español**; los `<tipo>` de commit van en 
 3. **Sync de durabilidad en el mismo tick.** `SetNWInt("ADS_Armor_Dur_"..hg, ...)` se llama en el mismo tick que el cálculo, sin timers — así el perdigón 2 lee la durabilidad tras el perdigón 1.
 4. **ARC9 EFT es solo-lectura.** `GetProcessedValue` ya incluye lo que el usuario configuró en el menú ARC9. ADS lee en vivo, nunca escribe. Una sola fuente de verdad.
 5. **La autoridad de armadura es `ADS.ArmorProfiles[classname]`.** Su presencia es la única condición que activa el sistema sobre un NPC.
+6. **El escudo de energía es un pre-filtro de pool GLOBAL delante de la armadura**, nunca zonal. `Hit → ESCUDO → ARMADURA → LIMBS`. Absorción total = early-return de `ScaleNPCDamage` **antes** de resolver armadura y **antes** de `ProcessLimbHit` — un hit absorbido no gasta durabilidad de placa ni dispara debuffs de limbs. La autoridad del escudo es `shield_type` en el whitelist entry (`ADS.GetOverride`), igual que limbs.
+7. **La recarga del escudo nunca genera tráfico de red.** Server simula (Think único sobre NPCs registrados, patrón `ads_scavenger`); solo NWVars on-change (`ADS_Shield_State/Type/Color`) y one-shots `net "ads_shield_fx"` con `CRecipientFilter:AddPVS` cruzan la red.
+8. **`ADS.ShieldTypes` (server) y `ADS_ShieldFX.Types` (client) deben tener las mismas keys.** Agregar un tipo de escudo nuevo = una entrada en cada tabla; la mecánica no cambia entre tipos, solo assets/defaults.
 
 ## Extractor — jerarquía de 3 branches (`ADS.ExtractBulletData`)
 
@@ -75,7 +80,11 @@ Hay un bloque de auto-test comentado al final de `ads_armor.lua` con valores esp
 
 **JSON** `data/ads/ads_config.json` (no versionado; se recrea). Claves top-level: `whitelist`, `blacklist`, `armor`, `curated_weapons`, `ammo_fallback`. Zonas indexadas por string del hitgroup (`"1"`=HEAD … `"7"`). Ver §8 de la arquitectura.
 
-**NWvars por entidad:** `ADS_Armor_Class_<hg>`, `ADS_Armor_Dur_<hg>`, `ADS_Armor_MaxDur_<hg>`, `ADS_Armor_Mat_<hg>`, flag `ADS_Armor_Init`. Slot `0` = GENERIC/fallback. `InitArmorNWvars` es **idempotente** (limpia slots 0–7 antes de repoblar).
+**NWvars por entidad (armadura):** `ADS_Armor_Class_<hg>`, `ADS_Armor_Dur_<hg>`, `ADS_Armor_MaxDur_<hg>`, `ADS_Armor_Mat_<hg>`, flag `ADS_Armor_Init`. Slot `0` = GENERIC/fallback. `InitArmorNWvars` es **idempotente** (limpia slots 0–7 antes de repoblar).
+
+**Whitelist entry — campos de escudo (Energy Shields, ver §19):** `shield_type` (gate maestro: string, key de `ADS.ShieldTypes`), `shield_max_hp` (int fijo `[1,5000]` — NO fracción como limbs), `shield_color` (`{r,g,b}`), `shield_recharge_delay`/`shield_recharge_rate` (float), `shield_can_regen` (bool, `false` legítimo). Saneados en `Sanitize()` de `ads_core.lua`.
+
+**NWvars por entidad (escudo):** `ADS_Shield_State` (int: 0=sin escudo, 1=UP, 2=DOWN, 3=CHARGING), `ADS_Shield_Type` (string), `ADS_Shield_Color` (vector). Escritas solo por `ads_shields.lua`, solo on-change.
 
 ## Contrato de red (tab Weapons)
 
@@ -83,8 +92,16 @@ Hay un bloque de auto-test comentado al final de `ads_armor.lua` con valores esp
 |---|---|---|
 | `ads_request_weapons_data` | cliente→server | (vacío) |
 | `ads_weapons_data` | server→cliente | `CuratedWeapons`, luego `AmmoFallback` (orden importa) |
-| `ads_save_curated` | cliente→server | classname + tabla (`{}` vacía = borrar) |
+| `ads_save_curated` | cliente→server | classname + tabla (`{}` vacía = borrar; incluye flags `plasma`/`emp` opcionales) |
 | `ads_save_ammo_fallback` | cliente→server | tabla de buckets |
+
+## Contrato de red (Energy Shields)
+
+| net string | Dirección | Payload |
+|---|---|---|
+| `ads_shield_fx` | server→cliente | `WriteUInt(ev,2)` (1=hit, 2=collapse, 3=restore) + entidad + `WriteVector` (solo si ev=1) |
+
+Enviado con `CRecipientFilter:AddPVS`, nunca broadcast. Es el único net string del subsistema — la config per-NPC viaja piggyback en `ads_modify_list`/`ads_save_curated` ya existentes.
 
 Todos los `net.Receive` del server están gated por `ply:IsAdmin()`. Todo `AddNetworkString` va en `ads_core.lua`.
 
