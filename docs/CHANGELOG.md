@@ -56,6 +56,54 @@ tab Weapons + fallback inline `inline_arc9`. Detalle: arquitectura §18.
 
 ---
 
+## PARCHES DE sesión Fix partículas colorables del escudo (CP4) — 2026-07-08
+
+Sesión de fix: el color custom (`shield_color`) teñía la burbuja pero no las partículas.
+El diagnóstico previo (Bloque B, PARCHE 4) concluyó **erróneamente** que el `.pcf` traía el
+color horneado y había que reeditarlo en el editor de partículas de Source. Parseando el
+árbol DMX del `speedy_energy_shield_colorable_pfx.pcf` (`format pcf 1`) se confirmó lo
+contrario: los 14 emisores `spdy_halo_3_custom_*` SÍ son colorables — cada uno tiene un
+operador `Remap Control Point to Vector` que escribe al campo 6 (Color) leyendo el
+**control point 4** en rango **0-1**. El Lua escribía en **CP1** con rango **0-255** → un
+canal que ningún operador lee → CP4 quedaba en cero (negro) → caía al fallback horneado. El
+`.pcf` no se tocó; el fix es solo Lua.
+
+- PARCHE 1 — Fix del tintado (`cl_ads_shields.lua`): helper `ApplyShieldColorCP` (única
+  fuente del número de CP y la normalización) que setea el color en `SHIELD_COLOR_CP = 4`
+  con RGB/255; `TintedParticle` migrado de `SetControlPoint(1, 0-255)` a
+  `ApplyShieldColorCP` (cubre impacto y colapso, ya ruteados por el set colorable).
+  **[APLICADO 2026-07-08]** — verificado en juego: impacto y estallido del colapso tiñen.
+
+- PARCHE 2 — Recarga tintada (`cl_ads_shields.lua`): campo `customRecharge =
+  "spdy_halo_3_custom_shield_recharge"` en los tipos spartan/elite (ya precacheado en
+  `ads_shared.lua`); el loop de recarga del Think (CHARGING) usa el set colorable vía
+  `CreateParticleSystem` + `ApplyShieldColorCP` cuando hay color custom (siguiendo el
+  origen del NPC), con fallback al `ParticleEffectAttach` del set horneado. Antes la recarga
+  NUNCA intentaba teñirse — usaba `def.recharge` con plain attach, que no devuelve handle.
+  **[APLICADO 2026-07-08]** — verificado en juego: el loop de recarga tiñe del color custom.
+
+- PARCHE 3 — Docs: comentario de `ads_shared.lua` corregido (CP1 → CP4); deuda cosmética
+  previa de `ads_estado.md` movida a "pendiente de verificar"; este bloque. Reabre de facto
+  el PARCHE 4 del Bloque B (cerrado 2026-07-07 como deuda con diagnóstico incorrecto).
+  **[APLICADO 2026-07-08]**
+
+- PARCHE 4 — Arcos del colapso tintados (`cl_ads_shields.lua`): los arcos eléctricos
+  persistentes del estado DOWN (`def.arcs`) se adjuntaban con `ParticleEffectAttach` sin
+  teñir (verificación de PARCHE 1/2 reveló que eran el único evento que seguía horneado).
+  Campo `customArcs = "spdy_halo_3_custom_shield_deplete_arcs"` en spartan/elite (ya
+  precacheado); el bloque de arcos del Think usa el set colorable vía `CreateParticleSystem`
+  + `ApplyShieldColorCP` cuando hay color custom, con fallback al horneado; se recuerda el
+  nombre atacheado (`fx.arcsName`) para que el `StopParticlesNamed` del apagado y `RemoveFX`
+  detengan el sistema correcto (custom o baked). **[PENDIENTE]** — verificar en juego que los
+  arcos del escudo caído salen del color custom.
+
+Verificación en juego: NPC con `shield_color` bien distinto al default del tipo (p.ej.
+spartan con verde puro) → impacto, estallido del colapso y loop de recarga tiñen (PARCHE
+1/2, confirmado); NPC sin color custom conserva el set horneado; `ads_shield_fx_particles 0`
+apaga todo. Pendiente: arcos persistentes del estado DOWN (PARCHE 4).
+
+---
+
 ## PARCHES DE sesión Scavenger crouch + filtro por base + identidad por spawnmenu — 2026-07-08
 
 Sesión de diseño con tres frentes: (a) fallback de agacharse en el pickup del scavenger

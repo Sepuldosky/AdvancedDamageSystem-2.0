@@ -83,6 +83,13 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
 
 ## Pendiente de verificar en juego
 
+- **Energy Shields — arcos del colapso tintados (fix 2026-07-08, `[PENDIENTE]`):** el
+  tintado de partículas por color custom quedó resuelto (los `spdy_halo_3_custom_*` SÍ son
+  colorables vía **CP4 / rango 0-1**, verificado parseando el árbol DMX del `.pcf` — no
+  había que reeditarlo; el bug era el Lua escribiendo en CP1/0-255). Verificado en juego en
+  impacto, estallido del colapso y recarga. Falta confirmar el último evento migrado: los
+  arcos eléctricos persistentes del estado DOWN (`customArcs`), que hasta ahora eran el
+  único que seguía saliendo con el color horneado.
 - **Copy de armadura por doble-clic (browser) — 2 parches `[PENDIENTE]`:**
   (1) `ads_request_armor` cae a leer la armadura viva de una instancia blindada
   (`ADS.ReadArmorNWvars`) cuando la clase no tiene perfil — copia sin whitelist previo
@@ -107,12 +114,6 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
 
 ## Remanentes / deuda conocida
 
-- **Energy Shields — partículas colorables no tiñen:** `shield_color` custom tiñe
-  bien la burbuja (`SetColor`), pero las partículas `spdy_halo_3_custom_*` quedan con
-  el color horneado del set spartan/elite (visualmente idénticas a los sets normales,
-  solo separadas en sistemas distintos). No responden a ningún control point de color
-  en runtime. Requeriría reeditar el `.pcf` en el editor de partículas de Source —
-  fuera de alcance. La burbuja tintada es la única garantía de color custom hoy.
 - **Block FX — decal overlay inerte:** el decal `ADS_Ricochet` (registro en
   `ads_shared.lua`, rama 3 de `ApplyBlockedHitFX`) no llega a verse sobre el modelo
   del NPC aun tras corregir el filtro de `util.Decal` — el gunshot de flesh queda

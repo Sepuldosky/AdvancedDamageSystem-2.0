@@ -23,7 +23,7 @@ game.AddDecal("ADS_Ricochet", {
 -- (spdy_*) y las rutas de materiales están HORNEADOS dentro de los .pcf, por eso
 -- los archivos conservan sus nombres/rutas originales. El set colorable
 -- (spdy_halo_3_custom_*) existía en el mod pero nunca se usó: ADS lo intenta
--- para shield_color custom (control point 1), con fallback al set del tipo.
+-- para shield_color custom (tintado por control point 4), con fallback al tipo.
 game.AddParticles("particles/speedy_energy_shield_pfx.pcf")
 game.AddParticles("particles/speedy_energy_shield_colorable_pfx.pcf")
 

@@ -31,10 +31,13 @@ ADS_ShieldFX.Types = {
         deplete  = "spdy_halo_3_spartan_shield_deplete",
         arcs     = "spdy_halo_3_spartan_shield_deplete_arcs",
         recharge = "spdy_halo_3_spartan_shield_recharge",
-        -- set colorable (nunca usado por el mod original): se intenta cuando el
-        -- NPC trae shield_color custom; si el CP1 no responde, fallback al set típico
-        customImpact  = "spdy_halo_3_custom_shield_impact_effect",
-        customDeplete = "spdy_halo_3_custom_shield_deplete",
+        -- set colorable spdy_halo_3_custom_*: se intenta cuando el NPC trae
+        -- shield_color custom (tintado por control point, ver ApplyShieldColorCP);
+        -- fallback automático al set horneado del tipo si no se puede crear
+        customImpact   = "spdy_halo_3_custom_shield_impact_effect",
+        customDeplete  = "spdy_halo_3_custom_shield_deplete",
+        customArcs     = "spdy_halo_3_custom_shield_deplete_arcs",
+        customRecharge = "spdy_halo_3_custom_shield_recharge",
     },
     elite = {
         label    = "Elite Sangheili",
@@ -45,8 +48,10 @@ ADS_ShieldFX.Types = {
         deplete  = "spdy_halo_3_elite_shield_deplete",
         arcs     = "spdy_halo_3_elite_shield_deplete_arcs",
         recharge = "spdy_halo_3_elite_shield_recharge",
-        customImpact  = "spdy_halo_3_custom_shield_impact_effect",
-        customDeplete = "spdy_halo_3_custom_shield_deplete",
+        customImpact   = "spdy_halo_3_custom_shield_impact_effect",
+        customDeplete  = "spdy_halo_3_custom_shield_deplete",
+        customArcs     = "spdy_halo_3_custom_shield_deplete_arcs",
+        customRecharge = "spdy_halo_3_custom_shield_recharge",
     },
     hev = {
         -- HEV Charge Shield: sin burbuja ni pcf — todo built-in (Goofy Armor)
@@ -61,7 +66,7 @@ local STATE_UP, STATE_DOWN, STATE_CHARGING = 1, 2, 3
 
 -- Estado FX per-NPC, creado LAZY al primer evento recibido (un NPC con escudo
 -- que nadie golpeó no gasta nada acá). [npc] = { bubble, lastHit, broke, swell,
--- arcsOn, rechargeAt }
+-- arcsOn, arcsName, rechargeAt }
 local ActiveFX = {}
 
 local function TypeDef(npc)
@@ -96,20 +101,27 @@ end
 
 local function RemoveFX(npc, fx)
     if IsValid(fx.bubble) then fx.bubble:Remove() end
-    if IsValid(npc) and fx.arcsOn then
-        local def = TypeDef(npc)
-        if def and def.arcs then npc:StopParticlesNamed(def.arcs) end
+    if IsValid(npc) and fx.arcsOn and fx.arcsName then
+        npc:StopParticlesNamed(fx.arcsName)
     end
     ActiveFX[npc] = nil
 end
 
--- B3 (mejor esfuerzo): partícula colorable en posición de mundo, tintada vía
--- control point 1. Los sistemas spdy_halo_3_custom_* EXISTEN en el pcf
--- (verificado por strings 2026-07-07); el primer intento con
--- CreateParticleSystem+CUSTOMORIGIN caía al fallback. Reintento:
--- CreateParticleSystemNoEntity (camino limpio para posición de mundo) y CP1 en
--- rango 0-255 (convención más común en pcf de workshop; si tiñe blanco, probar
--- 0-1). Devuelve false si el sistema no se pudo crear → el caller cae al set
+-- Los sistemas colorables spdy_halo_3_custom_* leen el color de sus partículas
+-- desde un CONTROL POINT (operador "Remap Control Point to Vector" → campo 6 =
+-- Color), presente en los 14 emisores. Verificado parseando el árbol DMX del pcf
+-- (2026-07-08): CP de entrada = 4, rango 0..1. El color viaja como POSICIÓN del
+-- control point, normalizado. Los hijos heredan los CP del padre en Source, así
+-- que basta setearlo en el handle que devuelve CreateParticleSystem.
+local SHIELD_COLOR_CP = 4
+local function ApplyShieldColorCP(ps, col)
+    ps:SetControlPoint(SHIELD_COLOR_CP, Vector(col.r / 255, col.g / 255, col.b / 255))
+end
+
+-- Partícula colorable en posición de mundo, tintada vía control point. El primer
+-- intento con CreateParticleSystem+CUSTOMORIGIN caía al fallback, por eso se usa
+-- CreateParticleSystemNoEntity (camino limpio para posición de mundo) primero.
+-- Devuelve false si el sistema no se pudo crear → el caller cae al set horneado
 -- del tipo (la burbuja tintada por SetColor es la garantía mínima).
 local function TintedParticle(npc, name, pos, col)
     if not name then return false end
@@ -131,7 +143,7 @@ local function TintedParticle(npc, name, pos, col)
         return false
     end
     ps:SetControlPoint(0, pos)
-    ps:SetControlPoint(1, Vector(col.r, col.g, col.b))
+    ApplyShieldColorCP(ps, col)
     return true
 end
 
@@ -292,20 +304,48 @@ hook.Add("Think", "ADS_ShieldFX_Think", function()
             end
         end
 
-        -- arcos eléctricos persistentes mientras el escudo está caído
+        -- arcos eléctricos persistentes mientras el escudo está caído. Con color
+        -- custom se usa el set colorable (tintado por CP); si no, el horneado.
+        -- Se recuerda el nombre atacheado (fx.arcsName) para detener el correcto.
         if PART_EN:GetBool() and state == STATE_DOWN and def.arcs then
             if not fx.arcsOn then
-                ParticleEffectAttach(def.arcs, PATTACH_ABSORIGIN_FOLLOW, npc, 0)
+                local name = def.arcs
+                local ps
+                if def.customArcs and HasCustomColor(npc, def) then
+                    ps = CreateParticleSystem(npc, def.customArcs, PATTACH_ABSORIGIN_FOLLOW)
+                    if ps and ps:IsValid() then
+                        ApplyShieldColorCP(ps, ShieldColor(npc, def))
+                        name = def.customArcs
+                    else
+                        ps = nil
+                    end
+                end
+                if not ps then
+                    ParticleEffectAttach(def.arcs, PATTACH_ABSORIGIN_FOLLOW, npc, 0)
+                end
+                fx.arcsName = name
                 fx.arcsOn = true
             end
         elseif fx.arcsOn then
-            if def.arcs then npc:StopParticlesNamed(def.arcs) end
+            if fx.arcsName then npc:StopParticlesNamed(fx.arcsName) end
             fx.arcsOn = false
         end
 
-        -- loop visual de recarga: re-attach cada 0.7 s (patrón del original)
+        -- loop visual de recarga: re-attach cada 0.7 s (patrón del original).
+        -- Con shield_color custom se usa el sistema colorable (tintado por CP,
+        -- siguiendo el origen del NPC); si no, el set horneado del tipo.
         if PART_EN:GetBool() and state == STATE_CHARGING and def.recharge and now >= fx.rechargeAt then
-            ParticleEffectAttach(def.recharge, PATTACH_ABSORIGIN_FOLLOW, npc, 0)
+            local tinted = false
+            if def.customRecharge and HasCustomColor(npc, def) then
+                local ps = CreateParticleSystem(npc, def.customRecharge, PATTACH_ABSORIGIN_FOLLOW)
+                if ps and ps:IsValid() then
+                    ApplyShieldColorCP(ps, ShieldColor(npc, def))
+                    tinted = true
+                end
+            end
+            if not tinted then
+                ParticleEffectAttach(def.recharge, PATTACH_ABSORIGIN_FOLLOW, npc, 0)
+            end
             fx.rechargeAt = now + 0.7
         end
     end
