@@ -346,6 +346,33 @@ local function Sanitize(data)
         for _,v in pairs(m) do if v~=1.0 then anyNonUnit=true break end end
         if anyNonUnit then c.dmg_mult=m end
     end
+    -- Energy shield (ads_shields.lua): gate maestro = shield_type válido contra el
+    -- registry. Sin tipo válido se descartan TODOS los campos shield_* (sin escudo).
+    -- Los campos opcionales caen a los defaults del tipo en InitShield.
+    if type(data.shield_type)=="string" and ADS.ShieldTypes and ADS.ShieldTypes[data.shield_type] then
+        c.shield_type=data.shield_type
+        if tonumber(data.shield_max_hp) then
+            c.shield_max_hp=math.floor(math.Clamp(tonumber(data.shield_max_hp),1,5000))
+        end
+        if type(data.shield_color)=="table" then
+            local r,g,b=tonumber(data.shield_color.r),tonumber(data.shield_color.g),tonumber(data.shield_color.b)
+            if r and g and b then
+                c.shield_color={
+                    r=math.floor(math.Clamp(r,0,255)),
+                    g=math.floor(math.Clamp(g,0,255)),
+                    b=math.floor(math.Clamp(b,0,255)),
+                }
+            end
+        end
+        if tonumber(data.shield_recharge_delay) then
+            c.shield_recharge_delay=math.Round(math.Clamp(tonumber(data.shield_recharge_delay),0,60)*10)/10
+        end
+        if tonumber(data.shield_recharge_rate) then
+            c.shield_recharge_rate=math.Round(math.Clamp(tonumber(data.shield_recharge_rate),0.1,1000)*10)/10
+        end
+        -- false es valor legítimo: solo se persiste si el cliente lo mandó
+        if data.shield_can_regen~=nil then c.shield_can_regen=data.shield_can_regen==true end
+    end
     return c
 end
 
@@ -469,6 +496,21 @@ function ADS.InspectNPC(ent)
             arm_r ={hp=ent.ADS_HP_ArmR, max=ent.ADS_HP_ArmRMax, ratio=lr(ent.ADS_HP_ArmR, ent.ADS_HP_ArmRMax)},
             leg_l ={hp=ent.ADS_HP_LegL, max=ent.ADS_HP_LegLMax, ratio=lr(ent.ADS_HP_LegL, ent.ADS_HP_LegLMax)},
             leg_r ={hp=ent.ADS_HP_LegR, max=ent.ADS_HP_LegRMax, ratio=lr(ent.ADS_HP_LegR, ent.ADS_HP_LegRMax)},
+        }
+    end
+    -- Energy shield state (populated by ads_shields.lua when the whitelist entry has shield_type)
+    if ent.ADS_Shield then
+        local s = ent.ADS_Shield
+        i.shield = {
+            type           = s.type,
+            hp             = math.Round(s.hp, 1),
+            max            = s.max,
+            state          = ({ "UP", "DOWN", "CHARGING" })[s.state] or "?",
+            can_regen      = s.canRegen,
+            recharge_delay = s.rechargeDelay,
+            recharge_rate  = s.rechargeRate,
+            regen_in       = math.Round(math.max(0, s.regenAt - CurTime()), 1),
+            lockout_in     = math.Round(math.max(0, (s.lockoutUntil or 0) - CurTime()), 1),
         }
     end
     -- Scavenger state (populated by ads_scavenger.lua; field exists even when false)
@@ -604,7 +646,11 @@ end
 -- mismo hook (la sangre se decide después de retornar): restore en timer.Simple(0).
 -- hitPos/hitNormal: trace real del detour ARC9 (path stash); nil en paths inline
 -- → fallback a dmginfo. La normal apunta HACIA AFUERA de la superficie.
-function ADS.ApplyBlockedHitFX(npc, di, hg, hitPos, hitNormal)
+-- bloodOnly: true = solo supresión de sangre (rama 1), sin chispa ni decal —
+-- lo usa el escudo (el hit absorbido tiene su propio flash de energía, la
+-- chispa metálica y el ricochet no corresponden). Los call sites de armadura
+-- pasan nil y conservan el comportamiento completo.
+function ADS.ApplyBlockedHitFX(npc, di, hg, hitPos, hitNormal, bloodOnly)
     -- token per-hit: lo consumen el detour de Visceral y el hook de ragdoll
     npc.ADS_BlockedHitToken = FrameNumber()
 
@@ -643,7 +689,7 @@ function ADS.ApplyBlockedHitFX(npc, di, hg, hitPos, hitNormal)
     end
 
     -- 2) chispa metálica en el punto de impacto
-    if BLK_SPK:GetBool() then
+    if not bloodOnly and BLK_SPK:GetBool() then
         local ed = EffectData()
         ed:SetOrigin(pos)
         ed:SetNormal(nrm)
@@ -657,14 +703,15 @@ function ADS.ApplyBlockedHitFX(npc, di, hg, hitPos, hitNormal)
     --    degradación aceptada: queda el de flesh.
     -- OJO: el 4º arg de util.Decal es el FILTRO del trace (entidades a ignorar),
     -- no el objetivo — pasar el npc ahí impedía pintar sobre él.
-    if BLK_DCL:GetBool() then
+    if not bloodOnly and BLK_DCL:GetBool() then
         util.Decal("ADS_Ricochet", pos + nrm * 4, pos - nrm * 4)
     end
 
     if DBG:GetInt() >= 2 and _dbgPass(npc) then
-        dprint(2, string.format("blockfx apply  %s hg=%d  src=%s%s",
+        dprint(2, string.format("blockfx apply  %s hg=%d  src=%s%s%s",
             npc:GetClass(), hg, hitPos and "trace" or "dmginfo",
-            (npc.IsVJBaseSNPC and "  vj_bleeds_off" or "")))
+            (npc.IsVJBaseSNPC and "  vj_bleeds_off" or ""),
+            (bloodOnly and "  blood_only" or "")))
     end
 end
 
@@ -709,6 +756,40 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
     local armorPenPow    = 0
     local stashFrameDelta = -1   -- tier 3: frames entre deposit y consume; -1 = no aplica
     -- ────────────────────────────────────────────────────────────────────────
+
+    -- ── ESCUDO: pre-filtro global delante de la armadura (ads_shields.lua) ──
+    -- No-overflow (§4 del diseño): la absorción total consume el hit COMPLETO y
+    -- corta el hook — la armadura no gasta durabilidad y ProcessLimbHit no corre
+    -- (cero debuffs con escudo arriba). Guarded: ads_shields carga después (alfabético).
+    local shieldNote = nil
+    if ADS.ProcessShield then
+        local absorbed, sTrace = ADS.ProcessShield(npc, hg, di)
+        if absorbed then
+            -- supresión de sangre del hit absorbido (sin chispa/decal de armadura:
+            -- el escudo tiene su propio flash de energía)
+            ADS.ApplyBlockedHitFX(npc, di, hg, nil, nil, true)
+            -- defensivo: descartar stash ARC9 fresco — la placa NO participa en un
+            -- hit absorbido (el detour normalmente ya no deposita, ver SHIELD-STOP)
+            npc.ADS_ArmorStash = nil
+            if dbgThis then
+                local hgStr = _HG_NAME[hg] or tostring(hg)
+                local plasmaStr = sTrace.plasma and " plasma" or ""
+                if dbgFull then
+                    print(string.format("[ADS HIT] ── %s  hg=%d(%s) ──────────────────",
+                        npc:GetClass(), hg, hgStr))
+                    print(string.format("  [shield] reason=%-8s drain=%.1f%s  pool=%.1f->%.1f  in=%.1f->0  (hit consumido: sin armadura/limbs)",
+                        sTrace.reason, sTrace.drain or 0, plasmaStr, sTrace.hpBefore, sTrace.hpAfter, dmg_in))
+                else
+                    print(string.format("[ADS] %s hg=%d(%s) SHIELD %s drain=%.1f%s pool=%.1f->%.1f  in=%.1f->0",
+                        npc:GetClass(), hg, hgStr, sTrace.reason, sTrace.drain or 0, plasmaStr,
+                        sTrace.hpBefore, sTrace.hpAfter, dmg_in))
+                end
+            end
+            return
+        end
+        -- bypass/down: el hit sigue el pipeline normal; anotar para la traza
+        shieldNote = sTrace and sTrace.reason or nil
+    end
 
     -- Pre-filtro de armadura 2.0. ARC9: consume el stash depositado por el detour
     -- de AfterShotFunction. VJ/HL2/TFA: resolve inline como antes.
@@ -834,6 +915,9 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
             -- Tier 2: verbose block
             print(string.format("[ADS HIT] ── %s  hg=%d(%s) ──────────────────",
                 npc:GetClass(), hg, hgStr))
+            if shieldNote then
+                print(string.format("  [shield] reason=%-8s (hit pasa entero al pipeline)", shieldNote))
+            end
             print(string.format("  [armor]  path=%-12s src=%-8s pen=%-3s  cls=%d  penPow=%.0f  dur=%.0f->%.0f  in=%.1f->%.1f",
                 armorPath, armorSrc, penStr, armorClass, armorPenPow,
                 armorDurBef, armorDurAft, dmg_in, dmg_pre_comp))
@@ -853,10 +937,11 @@ hook.Add("ScaleNPCDamage","ADS_Core_NPC",function(npc,hg,di)
             -- Tier 1: compact single line
             local limbStr = lb and (lb.zone .. string.format(" %.1f->%.1f", lb.before, lb.after)) or "-"
             local compStr = compEM ~= 1.0 and string.format(" eng/%.2f", compEM) or ""
-            print(string.format("[ADS] %s hg=%d(%s) src=%-8s path=%-12s %s cls=%d penPow=%.0f  in=%.1f->%.1f  limb=[%s]%s",
+            local shdStr  = shieldNote and (" shd=" .. shieldNote) or ""
+            print(string.format("[ADS] %s hg=%d(%s) src=%-8s path=%-12s %s cls=%d penPow=%.0f  in=%.1f->%.1f  limb=[%s]%s%s",
                 npc:GetClass(), hg, hgStr, armorSrc, armorPath,
                 penStr, armorClass, armorPenPow,
-                dmg_in, dmg_final, limbStr, compStr))
+                dmg_in, dmg_final, limbStr, compStr, shdStr))
         end
     end
     -- Tier 3: SND pipeline summary — completa el par DET+SND del full pipeline trace
@@ -896,6 +981,7 @@ util.AddNetworkString("ads_save_ammo_fallback")
 util.AddNetworkString("ads_request_scav_weights")
 util.AddNetworkString("ads_scav_weights_data")
 util.AddNetworkString("ads_save_scav_weight")
+util.AddNetworkString("ads_shield_fx")
 
 local function GetAdmins()
     local t = {}
@@ -941,15 +1027,27 @@ net.Receive("ads_modify_list",function(_,ply)
     if not IsValid(ply) or not ply:IsAdmin() then return end
     local action=net.ReadString()
 
+    -- Los cambios de whitelist pueden dar/quitar escudo a NPCs vivos de la clase
+    -- (ads_shields.lua carga después: guard). bl_add también aplica: quita el
+    -- entry de whitelist (_BlAddNoSave) → InitShield remueve el escudo.
+    local function RefreshShield(class)
+        if ADS.RefreshShieldsForClass then ADS.RefreshShieldsForClass(class) end
+    end
+
     -- Acciones individuales (toolgun, compatibilidad hacia atrás)
     if action=="wl_add" then
         local classname=net.ReadString()
         local data=net.ReadTable()
         ADS.AddToWhitelist(classname,data)
+        RefreshShield(classname)
     elseif action=="wl_del" then
-        ADS.RemoveFromWhitelist(net.ReadString())
+        local classname=net.ReadString()
+        ADS.RemoveFromWhitelist(classname)
+        RefreshShield(classname)
     elseif action=="bl_add" then
-        ADS.AddToBlacklist(net.ReadString())
+        local classname=net.ReadString()
+        ADS.AddToBlacklist(classname)
+        RefreshShield(classname)
     elseif action=="bl_del" then
         ADS.RemoveFromBlacklist(net.ReadString())
 
@@ -959,14 +1057,17 @@ net.Receive("ads_modify_list",function(_,ply)
         local classes=net.ReadTable()
         for _,class in ipairs(classes) do _WlAddNoSave(class,payload) end
         ADS.SaveConfig()
+        for _,class in ipairs(classes) do RefreshShield(class) end
     elseif action=="bl_add_batch" then
         local classes=net.ReadTable()
         for _,class in ipairs(classes) do _BlAddNoSave(class) end
         ADS.SaveConfig()
+        for _,class in ipairs(classes) do RefreshShield(class) end
     elseif action=="del_batch" then
         local classes=net.ReadTable()
         for _,class in ipairs(classes) do _WlDelNoSave(class) _BlDelNoSave(class) end
         ADS.SaveConfig()
+        for _,class in ipairs(classes) do RefreshShield(class) end
     end
 
     BroadcastListsToAdmins()
@@ -979,6 +1080,10 @@ net.Receive("ads_admin_action",function(_,ply)
     elseif action=="clear_bl" then ADS.ClearBlacklist()
     elseif action=="reload" then ADS.LoadConfig()
     elseif action=="save" then ADS.SaveConfig() end
+    -- reload/clear_wl pueden cambiar la config de escudo de cualquier clase
+    if (action=="reload" or action=="clear_wl") and ADS.RefreshAllShields then
+        ADS.RefreshAllShields()
+    end
     BroadcastListsToAdmins()
 end)
 
@@ -1230,6 +1335,20 @@ hook.Add("InitPostEntity", "ADS_ARC9_Compat", function()
             and ADS.GetZone and ADS.ExtractBulletData and ADS.ResolveArmor
             and ADS.IsArmored and ADS.IsArmored(ent)
         then
+            -- Escudo arriba: el round se detiene en el escudo (no-overflow §4).
+            -- NO resolver armadura ni depositar stash — la placa no participa.
+            -- El drain real lo hace ProcessShield en ScaleNPCDamage (una sola
+            -- autoridad); acá solo se predice para cortar penleft. Entre detour
+            -- y hook nada regenera (la regen es Think) → la predicción coincide.
+            if ADS.ShieldWillAbsorb and ADS.ShieldWillAbsorb(ent, dmg) then
+                if DBG:GetInt() >= 3 and _dbgPass(ent) then
+                    print(string.format(
+                        "[ADS DET] SHIELD-STOP f=%d  %s  hg=%d(%s)  penleft->0  (sin stash)",
+                        FrameNumber(), ent:GetClass(), tr.HitGroup,
+                        (_HG_NAME[tr.HitGroup] or tostring(tr.HitGroup))))
+                end
+                return origASF(self, tr, dmg, range, 0, alreadypenned, secondary)
+            end
             local zona = ADS.GetZone(ent, tr.HitGroup)
             if zona and bit.band(dmg:GetDamageType(), BLOCKABLE) ~= 0 then
                 local tuple = ADS.ExtractBulletData(self, dmg)

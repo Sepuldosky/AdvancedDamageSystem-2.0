@@ -94,11 +94,18 @@ function ADS.SanitizeCuratedWeapon(raw)
     if type(raw) ~= "table" then return nil end
     local pp, ad, pc = tonumber(raw.penPower), tonumber(raw.armorDamage), tonumber(raw.penChanceBase)
     if not (pp and ad and pc) then return nil end
-    return {
+    local out = {
         penPower      = math.Clamp(pp, 1, 115),
         armorDamage   = math.Clamp(ad, 1, 120),
         penChanceBase = math.Round(math.Clamp(pc, 0, 1) * 100) / 100,
     }
+    -- Flags de escudo (plasma/emp): manuales, no existen en ninguna base de armas.
+    -- Solo se persisten si son true. Los lee ProcessShield directo de
+    -- ADS.CuratedWeapons — independiente del tuple balístico, así una entrada
+    -- con flags no altera la jerarquía del extractor (EFT sigue ganando).
+    if raw.plasma == true then out.plasma = true end
+    if raw.emp == true then out.emp = true end
+    return out
 end
 
 -- Curated non-EFT weapon table; populated by the JSON loader in Block 2.
