@@ -1,5 +1,7 @@
 # Advanced Damage System 2.0
 
+**Versión 1.0.0**
+
 Sistema de blindaje zonal estilo **Escape from Tarkov** para NPCs y jugadores en **Garry's Mod**. Reemplaza la capa de armadura de ADS 1.x con un modelo de placas por zona (hitgroup): cada placa tiene durabilidad propia, probabilidad de penetración modulada por desgaste, daño romo al bloquear y daño reducido al perforar.
 
 ---
