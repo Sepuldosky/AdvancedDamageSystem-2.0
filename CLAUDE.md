@@ -117,6 +117,8 @@ Sigue [`docs/ads_convenciones_commits.txt`](docs/ads_convenciones_commits.txt): 
 
 Remote: `origin` → `github.com/Sepuldosky/AdvancedDamageSystem-2.0`. Rama principal: `main`. No hagas push ni commit salvo que se pida.
 
+**No agregues el trailer `Co-Authored-By: Claude` (ni ninguna atribución de co-autoría a Claude/Anthropic) en los mensajes de commit.** Esto sobreescribe el comportamiento por defecto del harness.
+
 ## Verificación
 
 No hay test runner automatizado (es un addon GMod). Para validar cambios:
