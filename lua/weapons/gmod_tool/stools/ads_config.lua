@@ -165,6 +165,16 @@ net.Receive("ads_inspect_result", function()
             print(string.format("  weapon_weight      = %.2f", info.scavenger.current_weapon_weight))
         end
     end
+    if info.shield then
+        print("--- Energy Shield ---")
+        print(string.format("  type       = %-10s state = %s",
+            tostring(info.shield.type), tostring(info.shield.state)))
+        print(string.format("  pool       = %.1f / %d", info.shield.hp or 0, info.shield.max or 0))
+        print(string.format("  regen      = %s  (rate=%.1f HP/s, delay=%.1fs)",
+            tostring(info.shield.can_regen), info.shield.recharge_rate or 0, info.shield.recharge_delay or 0))
+        print(string.format("  regen_in   = %.1fs   lockout_in = %.1fs",
+            info.shield.regen_in or 0, info.shield.lockout_in or 0))
+    end
     print("=================================")
 end)
 

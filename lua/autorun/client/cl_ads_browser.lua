@@ -46,6 +46,15 @@ ADS_Browser.Template = {
     limb_damage_transfer_arms = 0.80,
     limb_damage_transfer_legs = 0.60,
     mult_head = 1.0, mult_chest = 1.0, mult_arm = 1.0, mult_leg = 1.0,
+    -- Energy Shield (tab propia; viaja en el payload de Whitelist Selected solo
+    -- si shield_enabled — shield_enabled es client-only, no persiste)
+    shield_enabled        = false,
+    shield_type           = "spartan",
+    shield_max_hp         = 70,
+    shield_color          = nil,   -- nil = color default del tipo
+    shield_recharge_delay = 4.0,
+    shield_recharge_rate  = 15,
+    shield_can_regen      = true,
 }
 ADS_Browser.RightPanel = nil
 ADS_Browser.CopyButton = nil
@@ -323,6 +332,16 @@ local function BuildRow(parent, data, status)
             surface.SetTextPos(465, 6)
             surface.DrawText(txt)
         end
+
+        -- Indicador de escudo de energía (columna Shd): el dato ya viene completo
+        -- en el cache del whitelist (ads_send_lists) — cero red extra
+        local wls = ADS_Browser.Whitelist and ADS_Browser.Whitelist[self.data.class]
+        if type(wls) == "table" and wls.shield_type then
+            surface.SetFont("DermaDefaultBold")
+            surface.SetTextColor(120, 220, 255, 255)
+            surface.SetTextPos(555, 6)
+            surface.DrawText("[SHD]")
+        end
     end
 
     -- Icono: icon_path (IconOverride o convención VJ) > SpawnIcon del modelo > placeholder
@@ -524,6 +543,19 @@ function ADS_Browser.CopyFromClass(classname)
             t.mult_arm   = wl.dmg_mult.arm   or 1.0
             t.mult_leg   = wl.dmg_mult.leg   or 1.0
         end
+        -- Energy shield: copiar solo lo que el entry trae (los valores numéricos
+        -- del template no se resetean); el flag enabled sí refleja al NPC copiado
+        if wl.shield_type then
+            t.shield_enabled = true
+            t.shield_type    = wl.shield_type
+            if wl.shield_max_hp         then t.shield_max_hp         = wl.shield_max_hp         end
+            if wl.shield_recharge_delay then t.shield_recharge_delay = wl.shield_recharge_delay end
+            if wl.shield_recharge_rate  then t.shield_recharge_rate  = wl.shield_recharge_rate  end
+            if wl.shield_can_regen ~= nil then t.shield_can_regen = wl.shield_can_regen end
+            t.shield_color = type(wl.shield_color) == "table" and table.Copy(wl.shield_color) or nil
+        else
+            t.shield_enabled = false
+        end
     end
 
     -- Armor: async — ads_armor_data receive actualiza ArmorEditor.profile y refresca
@@ -543,6 +575,8 @@ function ADS_Browser.CopyFromClass(classname)
             slider:SetValue(ADS_Browser.Template[key])
         end
     end
+    -- Refrescar controles del tab Energy Shield in-place
+    if ADS_Browser.ShieldTabRefresh then ADS_Browser.ShieldTabRefresh() end
 end
 
 local function BuildArmorTab(parent)
@@ -1327,6 +1361,19 @@ local function BuildGeneralTab(parent)
                     arm   = t.mult_arm,   leg   = t.mult_leg,
                 },
             }
+            -- Energy shield: solo si está habilitado en su tab. Sin habilitar,
+            -- el entry se reemplaza SIN campos shield_* → whitelistear de nuevo
+            -- LIMPIA el escudo de esas clases (el label del tab lo advierte)
+            if t.shield_enabled then
+                payload.shield_type           = t.shield_type
+                payload.shield_max_hp         = t.shield_max_hp
+                payload.shield_recharge_delay = t.shield_recharge_delay
+                payload.shield_recharge_rate  = t.shield_recharge_rate
+                payload.shield_can_regen      = t.shield_can_regen
+                if type(t.shield_color) == "table" then
+                    payload.shield_color = t.shield_color
+                end
+            end
             net.Start("ads_modify_list")
             net.WriteString("wl_add_batch")
             net.WriteTable(payload)
@@ -1402,6 +1449,13 @@ local function BuildGeneralTab(parent)
             limb_damage_transfer_arms = 0.80,
             limb_damage_transfer_legs = 0.60,
             mult_head = 1.0, mult_chest = 1.0, mult_arm = 1.0, mult_leg = 1.0,
+            shield_enabled        = false,
+            shield_type           = "spartan",
+            shield_max_hp         = 70,
+            shield_color          = nil,
+            shield_recharge_delay = 4.0,
+            shield_recharge_rate  = 15,
+            shield_can_regen      = true,
         }
         ADS_Browser.ArmorEditor.profile = {}
         ADS_Browser.ArmorEditor.dirty   = false
@@ -1592,10 +1646,24 @@ local function BuildWeaponsTab(parent)
     local function adSetValue(v) v=math.Clamp(math.floor(v),WAD_MIN,WAD_MAX) adSlider:SetSlideX((v-WAD_MIN)/(WAD_MAX-WAD_MIN)) adEntry:SetText(tostring(v)) end
     local function pcSetValue(v) v=math.Clamp(v,0,1) pcSlider:SetSlideX(v) pcEntry:SetText(string.format("%.2f", v)) end
 
+    -- Flags de escudo (Energy Shields): curados a mano, no existen en ninguna base
+    -- de armas. Viajan en la misma entrada curada (ads_save_curated) y los lee
+    -- ProcessShield aparte del tuple balístico (en armas EFT aplican igual).
+    local flagRow = vgui.Create("DPanel", parent)
+    flagRow:Dock(TOP) flagRow:SetTall(20) flagRow:DockMargin(4, 4, 4, 0)
+    flagRow.Paint = function() end
+    local plasmaCheck = vgui.Create("DCheckBoxLabel", flagRow)
+    plasmaCheck:Dock(LEFT) plasmaCheck:SetWide(190)
+    plasmaCheck:SetText("Plasma (extra shield drain)")
+    local empCheck = vgui.Create("DCheckBoxLabel", flagRow)
+    empCheck:Dock(LEFT) empCheck:DockMargin(10, 0, 0, 0) empCheck:SetWide(230)
+    empCheck:SetText("EMP (shield collapse + lockout)")
+
     local function setEditorEnabled(en)
         ppSlider:SetEnabled(en) ppEntry:SetEnabled(en)
         adSlider:SetEnabled(en) adEntry:SetEnabled(en)
         pcSlider:SetEnabled(en) pcEntry:SetEnabled(en)
+        plasmaCheck:SetEnabled(en) empCheck:SetEnabled(en)
     end
     setEditorEnabled(false)
 
@@ -1639,10 +1707,14 @@ local function BuildWeaponsTab(parent)
         ppSetValue(values.penPower)
         adSetValue(values.armorDamage)
         pcSetValue(values.penChanceBase)
+        -- flags: solo existen en la entrada curada (nunca en el fallback)
+        local cw = ADS_Browser.CuratedWeapons[cls]
+        plasmaCheck:SetChecked(cw ~= nil and cw.plasma == true)
+        empCheck:SetChecked(cw ~= nil and cw.emp == true)
         setEditorEnabled(true)
 
         if data.base == "arc9" or data.base == "arc9_eft" then
-            noteLabel:SetText("ARC9 weapon: if the equipped round carries live EFT data, EFT values win over this entry. This only applies when the round has no EFT data.")
+            noteLabel:SetText("ARC9 weapon: if the equipped round carries live EFT data, EFT values win over this entry. This only applies when the round has no EFT data. Plasma/EMP flags always apply (read separately from ballistics).")
         elseif isCurated then
             noteLabel:SetText("Curated entry active.")
         else
@@ -1660,6 +1732,9 @@ local function BuildWeaponsTab(parent)
             penPower      = tonumber(ppEntry:GetText()) or WPP_MIN,
             armorDamage   = tonumber(adEntry:GetText()) or WAD_MIN,
             penChanceBase = tonumber(pcEntry:GetText()) or 0,
+            -- flags de escudo: solo se persisten si son true (or nil = no viaja)
+            plasma        = plasmaCheck:GetChecked() or nil,
+            emp           = empCheck:GetChecked() or nil,
         })
         net.SendToServer()
     end
@@ -1668,8 +1743,10 @@ local function BuildWeaponsTab(parent)
         if not selectedClass then return end
         net.Start("ads_save_curated")
         net.WriteString(selectedClass)
-        net.WriteTable({})  -- vacío = borra la entrada curada
+        net.WriteTable({})  -- vacío = borra la entrada curada (flags incluidos)
         net.SendToServer()
+        plasmaCheck:SetChecked(false)
+        empCheck:SetChecked(false)
     end
 
     -- ── Copy values from another weapon (client-side, no persiste hasta Save) ──
@@ -1744,6 +1821,19 @@ local function BuildWeaponsTab(parent)
                     surface.SetTextColor(badgeColor.r, badgeColor.g, badgeColor.b, 255)
                     surface.SetTextPos(w - 60, 4)
                     surface.DrawText(badge)
+                    -- badges de flags de escudo: P plasma (cian), E emp (amarillo)
+                    if curated and curated.plasma then
+                        surface.SetFont("DermaDefaultBold")
+                        surface.SetTextColor(120, 220, 255, 255)
+                        surface.SetTextPos(w - 88, 4)
+                        surface.DrawText("P")
+                    end
+                    if curated and curated.emp then
+                        surface.SetFont("DermaDefaultBold")
+                        surface.SetTextColor(240, 210, 90, 255)
+                        surface.SetTextPos(w - 76, 4)
+                        surface.DrawText("E")
+                    end
                 end
                 row.DoClick = function() loadWeapon(cls, data) end
             end
@@ -2092,6 +2182,195 @@ local function BuildScavengerTab(parent)
     renderList()
 end
 
+-- ── Energy Shield tab — config per-NPC del escudo (viaja en el whitelist entry) ──
+
+-- Espejo cliente de los defaults de ADS.ShieldTypes (server, ads_shields.lua),
+-- solo para el combo/reset del tab — el server sanea y es la única autoridad.
+local CLIENT_SHIELD_DEFAULTS = {
+    spartan = { max_hp = 70, recharge_delay = 4.0, recharge_rate = 15, can_regen = true },
+    elite   = { max_hp = 70, recharge_delay = 4.0, recharge_rate = 15, can_regen = true },
+    hev     = { max_hp = 50, recharge_delay = 6.0, recharge_rate = 10, can_regen = true },
+}
+local SHD_HP_MIN,    SHD_HP_MAX    = 1, 5000
+local SHD_DELAY_MIN, SHD_DELAY_MAX = 0, 60
+local SHD_RATE_MIN,  SHD_RATE_MAX  = 0.1, 1000
+
+local function BuildShieldTab(parent)
+    local info = vgui.Create("DLabel", parent)
+    info:Dock(TOP) info:DockMargin(4, 6, 4, 2)
+    info:SetText("Per-NPC energy shield (pool global delante de la armadura). Se aplica con "
+        .. "\"Whitelist Selected\" (tab General). OJO: si el checkbox de abajo está "
+        .. "apagado, whitelistear de nuevo LIMPIA el escudo de esas clases.")
+    info:SetWrap(true) info:SetAutoStretchVertical(true)
+    info:SetTextColor(Color(210, 210, 210))  -- mismo gris legible que el header del tab Scavenger
+
+    local enableCheck = vgui.Create("DCheckBoxLabel", parent)
+    enableCheck:Dock(TOP) enableCheck:DockMargin(4, 4, 4, 2)
+    enableCheck:SetText("Enable Energy Shield on whitelist")
+    enableCheck.OnChange = function(_, val) ADS_Browser.Template.shield_enabled = val end
+
+    -- Tipo: keys del registry visual. cl_ads_shields.lua carga DESPUÉS del browser
+    -- (alfabético) → leer al construir el tab, nunca al cargar el archivo. Sin el
+    -- archivo, degrada a la lista mínima (nunca error al abrir el browser).
+    local typeRow = vgui.Create("DPanel", parent)
+    typeRow:Dock(TOP) typeRow:SetTall(22) typeRow:DockMargin(4, 2, 4, 0)
+    typeRow.Paint = function() end
+    local typeLabel = vgui.Create("DLabel", typeRow)
+    typeLabel:Dock(LEFT) typeLabel:SetWide(110) typeLabel:SetText("Shield type")
+    typeLabel:SetFont("DermaDefault")
+    local typeCombo = vgui.Create("DComboBox", typeRow)
+    typeCombo:Dock(FILL)
+    -- Nombre bonito para mostrar; la key interna (data del choice) no cambia —
+    -- es el contrato con ADS.ShieldTypes/Sanitize
+    local SHIELD_TYPE_LABEL = { spartan = "Spartan", elite = "Elite Sangheili", hev = "HEV" }
+    local function typeLabel(k)
+        local d = ADS_ShieldFX and ADS_ShieldFX.Types and ADS_ShieldFX.Types[k]
+        return (d and d.label) or SHIELD_TYPE_LABEL[k] or k
+    end
+    local typeKeys = {}
+    if ADS_ShieldFX and ADS_ShieldFX.Types then
+        for k in pairs(ADS_ShieldFX.Types) do table.insert(typeKeys, k) end
+        table.sort(typeKeys)
+    else
+        typeKeys = { "elite", "hev", "spartan" }
+    end
+    for _, k in ipairs(typeKeys) do
+        typeCombo:AddChoice(typeLabel(k), k, k == ADS_Browser.Template.shield_type)
+    end
+    typeCombo.OnSelect = function(_, _, _, key)
+        ADS_Browser.Template.shield_type = key
+    end
+
+    -- Filas manuales (patrón manualRow de la tab Weapons — nunca DNumSlider en scroll)
+    local function manualRow(label)
+        local row = vgui.Create("DPanel", parent)
+        row:Dock(TOP) row:SetTall(20) row:DockMargin(4, 2, 4, 0)
+        row.Paint = function() end
+        local l = vgui.Create("DLabel", row)
+        l:Dock(LEFT) l:SetWide(110) l:SetText(label) l:SetFont("DermaDefault")
+        local e = vgui.Create("DTextEntry", row)
+        e:Dock(RIGHT) e:SetWide(50) e:SetNumeric(true)
+        local s = vgui.Create("DSlider", row)
+        s:Dock(FILL)
+        StyleManualSlider(s)
+        return e, s
+    end
+
+    local hpEntry, hpSlider       = manualRow("Shield HP")
+    local delayEntry, delaySlider = manualRow("Regen delay (s)")
+    local rateEntry, rateSlider   = manualRow("Regen rate (HP/s)")
+
+    -- Guard de reentrada (patrón durUpdating del tab Armor): SetSlideX dispara
+    -- OnValueChanged → sin el guard, setter y handler se llaman en bucle infinito
+    local shdUpdating = false
+
+    local function hpSet(v)
+        v = math.Clamp(math.floor(tonumber(v) or SHD_HP_MIN), SHD_HP_MIN, SHD_HP_MAX)
+        ADS_Browser.Template.shield_max_hp = v
+        shdUpdating = true
+        hpSlider:SetSlideX((v - SHD_HP_MIN) / (SHD_HP_MAX - SHD_HP_MIN))
+        shdUpdating = false
+        hpEntry:SetText(tostring(v))
+    end
+    local function delaySet(v)
+        v = math.Round(math.Clamp(tonumber(v) or SHD_DELAY_MIN, SHD_DELAY_MIN, SHD_DELAY_MAX) * 10) / 10
+        ADS_Browser.Template.shield_recharge_delay = v
+        shdUpdating = true
+        delaySlider:SetSlideX((v - SHD_DELAY_MIN) / (SHD_DELAY_MAX - SHD_DELAY_MIN))
+        shdUpdating = false
+        delayEntry:SetText(string.format("%.1f", v))
+    end
+    local function rateSet(v)
+        v = math.Round(math.Clamp(tonumber(v) or SHD_RATE_MIN, SHD_RATE_MIN, SHD_RATE_MAX) * 10) / 10
+        ADS_Browser.Template.shield_recharge_rate = v
+        shdUpdating = true
+        rateSlider:SetSlideX((v - SHD_RATE_MIN) / (SHD_RATE_MAX - SHD_RATE_MIN))
+        shdUpdating = false
+        rateEntry:SetText(string.format("%.1f", v))
+    end
+
+    hpSlider.OnValueChanged = function(_, x)
+        if shdUpdating then return end
+        hpSet(SHD_HP_MIN + x * (SHD_HP_MAX - SHD_HP_MIN))
+    end
+    hpEntry.OnEnter = function(self) hpSet(self:GetText()) end
+    hpEntry.OnLostFocus = hpEntry.OnEnter
+    delaySlider.OnValueChanged = function(_, x)
+        if shdUpdating then return end
+        delaySet(SHD_DELAY_MIN + x * (SHD_DELAY_MAX - SHD_DELAY_MIN))
+    end
+    delayEntry.OnEnter = function(self) delaySet(self:GetText()) end
+    delayEntry.OnLostFocus = delayEntry.OnEnter
+    rateSlider.OnValueChanged = function(_, x)
+        if shdUpdating then return end
+        rateSet(SHD_RATE_MIN + x * (SHD_RATE_MAX - SHD_RATE_MIN))
+    end
+    rateEntry.OnEnter = function(self) rateSet(self:GetText()) end
+    rateEntry.OnLostFocus = rateEntry.OnEnter
+
+    local regenCheck = vgui.Create("DCheckBoxLabel", parent)
+    regenCheck:Dock(TOP) regenCheck:DockMargin(4, 4, 4, 2)
+    regenCheck:SetText("Can regenerate (off = el escudo drenado queda caído)")
+    regenCheck.OnChange = function(_, val) ADS_Browser.Template.shield_can_regen = val end
+
+    -- Color: default del tipo (checkbox) u override con DColorMixer (primer
+    -- precedente de mixer en el addon)
+    local colorDefaultCheck = vgui.Create("DCheckBoxLabel", parent)
+    colorDefaultCheck:Dock(TOP) colorDefaultCheck:DockMargin(4, 6, 4, 2)
+    colorDefaultCheck:SetText("Use type default color")
+    local mixer = vgui.Create("DColorMixer", parent)
+    mixer:Dock(TOP) mixer:SetTall(120) mixer:DockMargin(4, 2, 4, 2)
+    mixer:SetPalette(false)
+    mixer:SetAlphaBar(false)
+    mixer:SetWangs(true)
+    mixer.ValueChanged = function(_, col)
+        if colorDefaultCheck:GetChecked() then return end
+        -- descartar alpha: el data model persiste {r,g,b}
+        ADS_Browser.Template.shield_color = { r = col.r, g = col.g, b = col.b }
+    end
+    colorDefaultCheck.OnChange = function(_, val)
+        if val then
+            ADS_Browser.Template.shield_color = nil
+        else
+            local c = mixer:GetColor()
+            ADS_Browser.Template.shield_color = { r = c.r, g = c.g, b = c.b }
+        end
+    end
+
+    local resetBtn = vgui.Create("DButton", parent)
+    resetBtn:Dock(TOP) resetBtn:DockMargin(4, 6, 4, 4) resetBtn:SetTall(24)
+    resetBtn:SetText("Reset Shield Template (defaults del tipo)")
+
+    -- Refresh in-place desde el Template (lo llama CopyFromClass, patrón WLSliders)
+    local function refreshFromTemplate()
+        local t = ADS_Browser.Template
+        enableCheck:SetValue(t.shield_enabled == true)
+        typeCombo:SetValue(typeLabel(t.shield_type or "spartan"))
+        hpSet(t.shield_max_hp)
+        delaySet(t.shield_recharge_delay)
+        rateSet(t.shield_recharge_rate)
+        regenCheck:SetValue(t.shield_can_regen ~= false)
+        colorDefaultCheck:SetValue(t.shield_color == nil)
+        if type(t.shield_color) == "table" then
+            mixer:SetColor(Color(t.shield_color.r or 255, t.shield_color.g or 255, t.shield_color.b or 255))
+        end
+    end
+    ADS_Browser.ShieldTabRefresh = refreshFromTemplate
+
+    resetBtn.DoClick = function()
+        local t = ADS_Browser.Template
+        local d = CLIENT_SHIELD_DEFAULTS[t.shield_type] or CLIENT_SHIELD_DEFAULTS.spartan
+        t.shield_max_hp         = d.max_hp
+        t.shield_recharge_delay = d.recharge_delay
+        t.shield_recharge_rate  = d.recharge_rate
+        t.shield_can_regen      = d.can_regen
+        t.shield_color          = nil
+        refreshFromTemplate()
+    end
+
+    refreshFromTemplate()
+end
+
 function BuildRightPanel(parent)
     local sheet = vgui.Create("DPropertySheet", parent)
     sheet:Dock(FILL)
@@ -2100,18 +2379,21 @@ function BuildRightPanel(parent)
     local armorScroll   = vgui.Create("DScrollPanel")
     local wlScroll      = vgui.Create("DScrollPanel")
     local weaponsScroll = vgui.Create("DScrollPanel")
+    local shieldScroll  = vgui.Create("DScrollPanel")
     local scavScroll    = vgui.Create("DScrollPanel")
     local generalScroll = vgui.Create("DScrollPanel")
 
-    sheet:AddSheet("Armor",      armorScroll,   nil, false, false)
-    sheet:AddSheet("Limbs / WL", wlScroll,      nil, false, false)
-    sheet:AddSheet("Weapons",    weaponsScroll, nil, false, false)
-    sheet:AddSheet("Scavenger",  scavScroll,    nil, false, false)
-    sheet:AddSheet("General",    generalScroll, nil, false, false)
+    sheet:AddSheet("Armor",         armorScroll,   nil, false, false)
+    sheet:AddSheet("Limbs / WL",    wlScroll,      nil, false, false)
+    sheet:AddSheet("Weapons",       weaponsScroll, nil, false, false)
+    sheet:AddSheet("Energy Shield", shieldScroll,  nil, false, false)
+    sheet:AddSheet("Scavenger",     scavScroll,    nil, false, false)
+    sheet:AddSheet("General",       generalScroll, nil, false, false)
 
     BuildArmorTab(armorScroll)
     BuildWLTab(wlScroll)
     BuildWeaponsTab(weaponsScroll)
+    BuildShieldTab(shieldScroll)
     BuildScavengerTab(scavScroll)
     BuildGeneralTab(generalScroll)
 end
@@ -2236,6 +2518,7 @@ function ADS_Browser.Open()
             { x = 390, label = "St" },
             { x = 425, label = "Arm" },
             { x = 465, label = "H/C/A/L" },
+            { x = 555, label = "Shd" },
         }
         for _, c in ipairs(cols) do
             surface.SetTextPos(c.x, 4)

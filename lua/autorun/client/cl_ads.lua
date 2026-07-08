@@ -178,6 +178,41 @@ local function BuildScavengerPanel(p)
     end
 end
 
+local function BuildShieldPanel(p)
+    p:ClearControls()
+    p:Help("Advanced Damage System - Energy Shields")
+
+    p:Help("System Toggle")
+    p:CheckBox("Enable Energy Shield system","ads_shield_enabled")
+
+    p:Help("Global Shield Tuning (per-NPC setup lives in the ADS Configuration browser, Energy Shield tab)")
+    p:NumSlider("Shield damage mult","ads_shield_damage_mult",0,10,2)
+    p:NumSlider("Plasma drain mult","ads_shield_plasma_mult",1,10,2)
+    p:NumSlider("EMP recharge lockout (s)","ads_shield_emp_lockout",0,60,1)
+    p:NumSlider("Recharge think interval (s)","ads_shield_think_interval",0.05,1,2)
+
+    p:Help("Effects")
+    p:CheckBox("Shield sounds (hits / collapse / charge)","ads_shield_sounds")
+    p:CheckBox("Shield bubble (client)","ads_shield_fx_bubble")
+    p:CheckBox("Shield particles (client)","ads_shield_fx_particles")
+
+    p:Help("Weapon plasma/EMP flags live in the Weapons tab of the browser (hand-curated).")
+
+    p:Help("Reset")
+    p:Button("Reset Energy Shield Settings to Default").DoClick = function()
+        Derma_Query("Reset Energy Shield Settings to defaults?","ADS","Yes",function()
+            RunConsoleCommand("ads_shield_enabled","1")
+            RunConsoleCommand("ads_shield_damage_mult","1.0")
+            RunConsoleCommand("ads_shield_plasma_mult","2.0")
+            RunConsoleCommand("ads_shield_emp_lockout","8.0")
+            RunConsoleCommand("ads_shield_think_interval","0.1")
+            RunConsoleCommand("ads_shield_sounds","1")
+            RunConsoleCommand("ads_shield_fx_bubble","1")
+            RunConsoleCommand("ads_shield_fx_particles","1")
+        end,"No")
+    end
+end
+
 local function BuildHelpPanel(p)
     p:ClearControls()
     p:Help("Advanced Damage System - Usage Guide")
@@ -218,8 +253,9 @@ local function BuildHelpPanel(p)
 end
 
 hook.Add("PopulateToolMenu","ADS_RegisterMenu",function()
-    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Armor",     "Armor Settings",     "","",BuildArmorPanel)
-    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Limbs",     "Limb HP Settings",   "","",BuildLimbsPanel)
-    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Scavenger", "Scavenger Settings", "","",BuildScavengerPanel)
-    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Help",      "How to use",         "","",BuildHelpPanel)
+    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Armor",     "Armor Settings",         "","",BuildArmorPanel)
+    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Limbs",     "Limb HP Settings",       "","",BuildLimbsPanel)
+    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Shield",    "Energy Shield Settings", "","",BuildShieldPanel)
+    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Scavenger", "Scavenger Settings",     "","",BuildScavengerPanel)
+    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Help",      "How to use",             "","",BuildHelpPanel)
 end)
