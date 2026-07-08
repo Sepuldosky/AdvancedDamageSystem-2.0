@@ -22,6 +22,10 @@ local DROP_OWN_T   = CreateConVar("ads_scavenger_drop_ownership_time",  "30",  F
 local RETRIEVE_EN  = CreateConVar("ads_scavenger_retrieve_own",         "0",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local RETRIEVE_DEL = CreateConVar("ads_scavenger_retrieve_delay",       "2",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
 local RETRIEVE_TO  = CreateConVar("ads_scavenger_retrieve_timeout",     "20",  FCVAR_REPLICATED + FCVAR_ARCHIVE)
+-- Crouch fallback: si el modelo no tiene animación de pickup (sets combine/metrocop),
+-- el NPC se agacha un tiempo fijo antes de equipar, en vez de equipar instantáneo.
+local CROUCH_FB    = CreateConVar("ads_scavenger_crouch_fallback",      "1",   FCVAR_REPLICATED + FCVAR_ARCHIVE)
+local CROUCH_TIME  = CreateConVar("ads_scavenger_crouch_time",          "1.2", FCVAR_REPLICATED + FCVAR_ARCHIVE)
 
 local function dprint(...) if SCAV_DBG:GetBool() then print("[ADS Scavenger]", ...) end end
 
@@ -210,8 +214,9 @@ end
 local function RegisterNPC(npc)
     if not IsValid(npc) or not npc:IsNPC() then return end
 
-    -- ADS blacklisted NPCs don't scavenge (combatants that intentionally have no armor)
-    if ADS.UserBlacklist and ADS.UserBlacklist[npc:GetClass()] then
+    -- ADS blacklisted NPCs don't scavenge (combatants that intentionally have no armor).
+    -- IsUserBlacklisted resuelve key de spawnmenu > classname (ver ads_core).
+    if ADS.IsUserBlacklisted and ADS.IsUserBlacklisted(npc) then
         npc.ADS_CanScavenge = false
         dprint("register", npc:GetClass(), "can_scavenge=false (ADS blacklist)")
         return
@@ -244,6 +249,55 @@ end
 -- secuencia (auto-convierte), y valida con VJ.AnimExists (devuelve dur=0 si falta).
 local PICKUP_ANIMS_VJ = {ACT_PICKUP_GROUND, ACT_PICKUP_RACK, "pickup", "pickup_weapon", "physgun_pickup"}
 
+-- Fallback de agacharse cuando el modelo no tiene anim de pickup (sets combine y
+-- metrocop no traen ACT_PICKUP_*). En VJ, ACT_COVER_LOW se traduce por set DENTRO
+-- de PlayAnim (combine → ACT_COVER + vjseq_Leanwall_Crouch*, metrocop →
+-- ACT_COVER_SMG1_LOW, rebel → coverlow) — un candidato cubre todos los sets.
+-- OJO: son idles en LOOP → lockAnimTime SIEMPRE numérico fijo, nunca false.
+local CROUCH_ANIMS_VJ     = {ACT_COVER_LOW, ACT_CROUCHIDLE}
+local CROUCH_ANIMS_NATIVE = {ACT_COVER_LOW, ACT_COVER_SMG1_LOW, ACT_CROUCHIDLE}
+
+-- Devuelve la duración FIJA del agachado, o 0 (apagado / modelo sin anim de crouch).
+local function TryCrouchFallback(npc)
+    if not CROUCH_FB:GetBool() then return 0 end
+    local t = math.Clamp(CROUCH_TIME:GetFloat(), 0.3, 3.0)
+
+    if npc.IsVJBaseSNPC and npc.VJ_ACT_PLAYACTIVITY then
+        for _, anim in ipairs(CROUCH_ANIMS_VJ) do
+            -- lockAnim=true: mismo mecanismo que la anim de pickup (corta el schedule
+            -- y bloquea chase/idle/ataques). lockAnimTime=t numérico: con false, VJ
+            -- calcularía la duración del loop y el NPC quedaría clavado un ciclo
+            -- arbitrario. PlayAnim valida con VJ.AnimExists → dur=0 si falta.
+            local ok, _, dur = pcall(npc.VJ_ACT_PLAYACTIVITY, npc, anim, true, t, false)
+            if ok and isnumber(dur) and dur > 0 then
+                dprint("crouch fallback (VJ)", npc:GetClass(), "t=" .. t)
+                return t
+            end
+        end
+        return 0
+    end
+
+    -- Nativos: mismo patrón ResetSequence de los approaches 1/2. Parquear la IA en
+    -- idle primero minimiza que el FSM pise la pose durante el agachado (si igual
+    -- la pisa, se conserva el beneficio funcional: el equip queda diferido).
+    for _, act in ipairs(CROUCH_ANIMS_NATIVE) do
+        local seq = npc:SelectWeightedSequence(act)
+        if seq and seq >= 0 then
+            local ok = pcall(function()
+                npc:SetSchedule(SCHED_IDLE_STAND)
+                npc:ResetSequence(seq)
+                npc:SetCycle(0)
+                npc:SetPlaybackRate(1)
+            end)
+            if ok then
+                dprint("crouch fallback (native)", npc:GetClass(), "t=" .. t)
+                return t
+            end
+        end
+    end
+    return 0
+end
+
 local function TryPickupAnimation(npc)
     if not IsValid(npc) then return 0 end
 
@@ -259,7 +313,7 @@ local function TryPickupAnimation(npc)
                 false)  -- faceEnemy: sin rotación
             if ok and isnumber(dur) and dur > 0 then return dur end
         end
-        return 0  -- modelo sin animación de pickup: equipar de inmediato
+        return TryCrouchFallback(npc)  -- sin anim de pickup: agacharse (o 0 = inmediato)
     end
 
     -- Approach 1: native Source pickup activities (Combine, Citizen, Metropolice support these)
@@ -296,7 +350,7 @@ local function TryPickupAnimation(npc)
         end
     end
 
-    return 0  -- no animation available, equip immediately
+    return TryCrouchFallback(npc)  -- no pickup animation: crouch fallback (or 0 = equip now)
 end
 
 -- ============================================================

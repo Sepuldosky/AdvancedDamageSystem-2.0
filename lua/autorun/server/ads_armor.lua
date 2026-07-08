@@ -319,7 +319,15 @@ function ADS.InitArmorNWvars(ent)
         ent:SetNWString("ADS_Armor_Mat_" .. hg, "")
     end
 
-    local profile = ADS.ArmorProfiles[ent:GetClass()]
+    -- Identidad: key de spawnmenu (si tiene config) > classname. El perfil de la
+    -- key manda; si esa key no tiene perfil de armadura, cae al del classname
+    -- (los perfiles se reemplazan, nunca se mezclan). GetConfigKey es lectura
+    -- pura (tablas + campo de entidad) — la pureza de este archivo se mantiene.
+    local key     = (ADS.GetConfigKey and ADS.GetConfigKey(ent)) or ent:GetClass()
+    local profile = ADS.ArmorProfiles[key]
+    if not profile and key ~= ent:GetClass() then
+        profile = ADS.ArmorProfiles[ent:GetClass()]
+    end
     if not profile then
         ent:SetNWBool("ADS_Armor_Init", false)
         return

@@ -308,7 +308,8 @@ local function InitLimbs(npc)
     if hp <= 0 then return end
     npc.ADS_SpawnHP = hp  -- guardado para reconstruir fracs en toolgun M2 y ResizeLimbPools
 
-    local override = ADS.GetOverride and ADS.GetOverride(npc:GetClass())
+    -- Key de spawnmenu (si tiene config) > classname (ver ADS.GetOverrideForEnt)
+    local override = ADS.GetOverrideForEnt and ADS.GetOverrideForEnt(npc)
     local hf = (override and tonumber(override.head_hp_frac)) or HEAD_FRAC:GetFloat()
     local af = (override and tonumber(override.arms_hp_frac)) or ARMS_FRAC:GetFloat()
     local lf = (override and tonumber(override.legs_hp_frac)) or LEGS_FRAC:GetFloat()
@@ -381,7 +382,7 @@ function ADS.ProcessLimbHit(npc, hitgroup, dmginfo)
     local dmg = dmginfo:GetDamage()
     if dmg <= 0 then return end
 
-    local override = ADS.GetOverride and ADS.GetOverride(npc:GetClass())
+    local override = ADS.GetOverrideForEnt and ADS.GetOverrideForEnt(npc)
 
     local zone, before, after, poolMax, xfer
     if hitgroup == HITGROUP_HEAD then

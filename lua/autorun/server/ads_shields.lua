@@ -239,7 +239,8 @@ end
 -- La autoridad es el whitelist entry (§6): sin entry o sin shield_type válido → sin escudo.
 function ADS.InitShield(npc)
     if not IsValid(npc) or not npc:IsNPC() then return end
-    local override = ADS.GetOverride and ADS.GetOverride(npc:GetClass()) or nil
+    -- Key de spawnmenu (si tiene config) > classname (ver ADS.GetOverrideForEnt)
+    local override = ADS.GetOverrideForEnt and ADS.GetOverrideForEnt(npc) or nil
     local stype = override and override.shield_type or nil
     local def = stype and ADS.ShieldTypes[stype] or nil
     if not def then
@@ -286,7 +287,12 @@ end
 function ADS.RefreshShieldsForClass(classname)
     if not classname or classname == "" then return end
     for _, e in ipairs(ents.GetAll()) do
-        if IsValid(e) and e:IsNPC() and e:GetClass() == classname then ADS.InitShield(e) end
+        -- Matchea classname o key de spawnmenu: editar el entry de una key
+        -- refresca en vivo los NPCs spawneados con ella
+        if IsValid(e) and e:IsNPC()
+           and (e:GetClass() == classname or e.NPCName == classname) then
+            ADS.InitShield(e)
+        end
     end
 end
 

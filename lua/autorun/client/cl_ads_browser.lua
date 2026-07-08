@@ -31,6 +31,7 @@ ADS_Browser.OrderedRows = {}    -- array de {class, row} en orden de pantalla, p
 ADS_Browser.Filter = {
     search = "",
     category = "All",
+    base = "ALL",   -- ALL | HL2 | GMOD | VJ | DRG | ZBASE
     states = {
         wl_user = true, wl_hard = true,
         bl_user = true, bl_hard = true,
@@ -116,8 +117,42 @@ local function ResolveIconPath(class, data)
     return nil
 end
 
+-- Clasifica una entrada del catálogo por base de NPCs (para el filtro Base).
+-- Se calcula UNA vez por entrada al construir el catálogo (campo entry.base).
+-- Orden de chequeo: ZBase ANTES que scripted_ents (sus NPCs spawnean clases de
+-- motor, no SENTs). Todo defensivo: cualquiera de las bases puede no estar montada.
+-- vjList/drgList: list.Get prefetcheados por el caller (list.Get copia la tabla
+-- en cada llamada — no llamarlo por fila).
+local function DetectBase(class, data, vjList, drgList)
+    if (istable(ZBaseNPCs) and ZBaseNPCs[class] ~= nil)
+       or data.ZBaseCategory ~= nil or data.ZBaseEngineClass ~= nil then
+        return "ZBASE"
+    end
+    if (drgList and drgList[class] ~= nil)
+       or scripted_ents.IsBasedOn(class, "drgbase_nextbot") then
+        return "DRG"
+    end
+    -- VJ: flag IsVJBaseSNPC del SENT almacenado (tabla cruda, sin herencia —
+    -- puede faltar en derivados) + cadena de Base contra las DOS raíces VJ
+    -- (humana y creature declaran Base="base_entity", no encadenan entre sí)
+    -- + registro del spawner VJ. Tres señales redundantes, todas baratas.
+    local stored = scripted_ents.GetStored(class)
+    if (stored and istable(stored.t) and stored.t.IsVJBaseSNPC)
+       or scripted_ents.IsBasedOn(class, "npc_vj_human_base")
+       or scripted_ents.IsBasedOn(class, "npc_vj_creature_base")
+       or (vjList and vjList[class] ~= nil) then
+        return "VJ"
+    end
+    -- HL2 stock: todas las entradas de garrysmod/lua/autorun/base_npcs.lua
+    -- llevan Author = "VALVe".
+    if data.Author == "VALVe" then return "HL2" end
+    return "GMOD"
+end
+
 local function BuildCatalog()
     local cat = {}
+    local vjList  = list.Get("VJBASE_SPAWNABLE_NPC")
+    local drgList = list.Get("DrGBaseNextbots")
 
     -- Fuente A: list.Get("NPC") - Sandbox + lo que VJ registre aqu�
     local npcs = list.Get("NPC") or {}
@@ -129,6 +164,7 @@ local function BuildCatalog()
                 category = ResolveCategory(data.Category) or "Other",
                 model    = data.Model    or nil,
                 icon_path  = ResolveIconPath(class, data),
+                base     = DetectBase(class, data, vjList, drgList),
             }
         end
     end
@@ -145,7 +181,8 @@ local function BuildCatalog()
                     name     = entry.Name     or entry.Class,
                     category = ResolveCategory(entry.Category) or "VJ Base",
                     model    = entry.Model    or nil,
-                    icon_path  = ResolveIconPath(class, data),
+                    icon_path  = ResolveIconPath(entry.Class, entry),
+                    base     = "VJ",   -- tabla interna de VJ: pertenencia directa
                 }
             end
         end
@@ -174,6 +211,9 @@ end
 
 local function RowMatchesFilter(class, data, status)
     local f = ADS_Browser.Filter
+    if f.base ~= "ALL" and (data.base or "GMOD") ~= f.base then
+        return false
+    end
     if f.category ~= "All" and data.category ~= f.category then
         return false
     end
@@ -216,6 +256,30 @@ local function ApplyFilter()
     ADS_Browser.Scroll:InvalidateLayout(true)
     local canvas = ADS_Browser.Scroll:GetCanvas()
     if IsValid(canvas) then canvas:InvalidateLayout(true) end
+end
+
+-- Repuebla el combo de categorías mostrando solo las de la base activa del
+-- filtro (o todas si base=ALL). Se llama al abrir, al cambiar de base y tras
+-- un scan-world (filas nuevas pueden traer categorías nuevas).
+function ADS_Browser.RepopulateCategories()
+    local combo = ADS_Browser.CatCombo
+    if not IsValid(combo) then return end
+    combo:Clear()
+    combo:SetValue("All categories")
+    combo:AddChoice("All", "All", true)
+    local base = ADS_Browser.Filter.base or "ALL"
+    local seen = {}
+    for _, data in pairs(ADS_Browser.Catalog) do
+        if base == "ALL" or (data.base or "GMOD") == base then
+            seen[data.category] = true
+        end
+    end
+    local sorted = {}
+    for c in pairs(seen) do sorted[#sorted + 1] = c end
+    table.sort(sorted)
+    for _, c in ipairs(sorted) do
+        combo:AddChoice(c, c, false)
+    end
 end
 
 -- Construye una fila custom para un NPC
@@ -2198,9 +2262,9 @@ local SHD_RATE_MIN,  SHD_RATE_MAX  = 0.1, 1000
 local function BuildShieldTab(parent)
     local info = vgui.Create("DLabel", parent)
     info:Dock(TOP) info:DockMargin(4, 6, 4, 2)
-    info:SetText("Per-NPC energy shield (pool global delante de la armadura). Se aplica con "
-        .. "\"Whitelist Selected\" (tab General). OJO: si el checkbox de abajo está "
-        .. "apagado, whitelistear de nuevo LIMPIA el escudo de esas clases.")
+    info:SetText("Per-NPC energy shield (global pool in front of the armor). Applied with "
+        .. "\"Whitelist Selected\" (General tab). NOTE: if the checkbox below is off, "
+        .. "whitelisting again CLEARS the shield of those classes.")
     info:SetWrap(true) info:SetAutoStretchVertical(true)
     info:SetTextColor(Color(210, 210, 210))  -- mismo gris legible que el header del tab Scavenger
 
@@ -2310,7 +2374,7 @@ local function BuildShieldTab(parent)
 
     local regenCheck = vgui.Create("DCheckBoxLabel", parent)
     regenCheck:Dock(TOP) regenCheck:DockMargin(4, 4, 4, 2)
-    regenCheck:SetText("Can regenerate (off = el escudo drenado queda caído)")
+    regenCheck:SetText("Can regenerate (off = drained shield stays down)")
     regenCheck.OnChange = function(_, val) ADS_Browser.Template.shield_can_regen = val end
 
     -- Color: default del tipo (checkbox) u override con DColorMixer (primer
@@ -2339,7 +2403,7 @@ local function BuildShieldTab(parent)
 
     local resetBtn = vgui.Create("DButton", parent)
     resetBtn:Dock(TOP) resetBtn:DockMargin(4, 6, 4, 4) resetBtn:SetTall(24)
-    resetBtn:SetText("Reset Shield Template (defaults del tipo)")
+    resetBtn:SetText("Reset Shield Template (type defaults)")
 
     -- Refresh in-place desde el Template (lo llama CopyFromClass, patrón WLSliders)
     local function refreshFromTemplate()
@@ -2460,6 +2524,29 @@ function ADS_Browser.Open()
     filterBar:SetTall(24)
     filterBar.Paint = function() end
 
+    -- Filtro por base de NPCs (VJ/DRG/ZBase detectados por DetectBase al
+    -- construir el catálogo; HL2 = stock VALVe; GMOD = resto de addons)
+    local baseCombo = vgui.Create("DComboBox", filterBar)
+    baseCombo:Dock(LEFT)
+    baseCombo:SetWide(110)
+    baseCombo:DockMargin(0, 0, 6, 0)
+    baseCombo:SetValue("Base: All")
+    local BASE_CHOICES = {
+        {"Base: All", "ALL"}, {"HL2", "HL2"}, {"GMod", "GMOD"},
+        {"VJ", "VJ"}, {"DrG", "DRG"}, {"ZBase", "ZBASE"},
+    }
+    for i, choice in ipairs(BASE_CHOICES) do
+        baseCombo:AddChoice(choice[1], choice[2], i == 1)
+    end
+    baseCombo.OnSelect = function(_, _, _, data)
+        ADS_Browser.Filter.base = data
+        -- La categoría activa puede no existir en la nueva base: resetear
+        ADS_Browser.Filter.category = "All"
+        ADS_Browser.RepopulateCategories()
+        ApplyFilter()
+    end
+    ADS_Browser.BaseCombo = baseCombo
+
     local catCombo = vgui.Create("DComboBox", filterBar)
     catCombo:Dock(LEFT)
     catCombo:SetWide(180)
@@ -2551,17 +2638,8 @@ function ADS_Browser.Open()
     local total = table.Count(ADS_Browser.Catalog)
     header:SetText("Catalog: " .. total .. " NPCs  |  Requesting state from server...")
 
-    -- Poblar dropdown de categorías
-    local seen = {}
-    for _, data in pairs(ADS_Browser.Catalog) do
-        seen[data.category] = true
-    end
-    local sortedCats = {}
-    for c, _ in pairs(seen) do table.insert(sortedCats, c) end
-    table.sort(sortedCats)
-    for _, c in ipairs(sortedCats) do
-        ADS_Browser.CatCombo:AddChoice(c, c, false)
-    end
+    -- Poblar dropdown de categorías (base-aware)
+    ADS_Browser.RepopulateCategories()
 
     -- Primer render con estados vacíos, luego request al server
     RenderCatalog(scroll)
@@ -2596,6 +2674,7 @@ function ADS_Browser.Open()
         ADS_Browser.Categories = {}
         ADS_Browser.Filter.search = ""
         ADS_Browser.Filter.category = "All"
+        ADS_Browser.Filter.base = "ALL"
         ADS_Browser.Filter.states = {
             wl_user = true, wl_hard = true,
             bl_user = true, bl_hard = true,
@@ -2642,6 +2721,8 @@ end
 net.Receive("ads_scan_world_result", function()
     local classes = net.ReadTable() or {}
     local added = 0
+    local vjList  = list.Get("VJBASE_SPAWNABLE_NPC")
+    local drgList = list.Get("DrGBaseNextbots")
     for _, class in ipairs(classes) do
         if not ADS_Browser.Catalog[class] then
             ADS_Browser.Catalog[class] = {
@@ -2650,6 +2731,7 @@ net.Receive("ads_scan_world_result", function()
                 category  = "World-only (unregistered)",
                 model     = nil,
                 icon_path = nil,
+                base      = DetectBase(class, {}, vjList, drgList),
             }
             added = added + 1
         end
@@ -2658,19 +2740,8 @@ net.Receive("ads_scan_world_result", function()
     if added > 0 and IsValid(ADS_Browser.Frame) then
         ADS_Browser.RowsBuilt = false
         RenderCatalog(ADS_Browser.Scroll)
-        -- Agregar categoría al dropdown si no estaba ya
-        local found = false
-        local cat = ADS_Browser.CatCombo
-        if IsValid(cat) then
-            for i, label in ipairs(cat.Choices or {}) do
-                if cat.Data and cat.Data[i] == "World-only (unregistered)" then
-                    found = true break
-                end
-            end
-            if not found then
-                cat:AddChoice("World-only (unregistered)", "World-only (unregistered)", false)
-            end
-        end
+        -- Repoblar el dropdown de categorías (base-aware, sin duplicados)
+        ADS_Browser.RepopulateCategories()
         ADS_Browser.RequestState()
     end
 end)

@@ -213,49 +213,9 @@ local function BuildShieldPanel(p)
     end
 end
 
-local function BuildHelpPanel(p)
-    p:ClearControls()
-    p:Help("Advanced Damage System - Usage Guide")
-
-    p:Help("Overview")
-    p:Help("ADS adds a zonal armor and damage-scaling system for NPCs and players. It blocks certain damage types on specific body zones and lets you tune damage per hitgroup globally or per-NPC.")
-
-    p:Help("Detection Layers (priority order)")
-    p:Help("1. User blacklist - NPC does NOT carry armor")
-    p:Help("2. User whitelist - NPC DOES carry armor (with optional per-class values)")
-    p:Help("3. Hardcoded blacklist - known civilians that share classes with soldiers")
-    p:Help("4. Hardcoded whitelist - HL2 vanilla combine/metropolice/citizen/alyx/barney")
-    p:Help("5. VJ classname patterns (vj_hsold, vj_combine, vj_cswat, etc.)")
-    p:Help("6. VJ auto-detect via VJ_NPC_Class (CLASS_COMBINE, CLASS_UNITED_STATES, etc.)")
-
-    p:Help("Armor mechanics")
-    p:Help("Armor absorbs damage only on protected zones: torso, generic and stomach hitgroups always protected, head uses the helmet multiplier, other zones pass through unless Full Body is enabled.")
-    p:Help("Blockable damage types: bullet, buckshot, club, slash, blast, sniper (incl. ARC9 custom), crush.")
-    p:Help("Blast and crush ignore hitgroup and use their dedicated effectiveness multipliers.")
-    p:Help("Armor wears down 15% of whatever it blocked.")
-
-    p:Help("Damage Multipliers (second pass)")
-    p:Help("After armor is applied, a damage multiplier is applied per hitgroup. Uses per-classname override first, otherwise falls back to the global multiplier sliders in Armor Settings. Value 1.0 means no change. Only affects NPCs, never players. Explosions and crush are not affected by this pass.")
-
-    p:Help("Toolgun workflow")
-    p:Help("Left click on NPC: whitelist that classname using the current tool sliders (armor, reduction, full body, damage multipliers). If the NPC was blacklisted, it moves to whitelist automatically.")
-    p:Help("Right click on NPC: toggle blacklist. If whitelisted, moves to blacklist.")
-    p:Help("Reload (R) on NPC: print inspection details to client console and show notification.")
-
-    p:Help("Tool sliders at 1.0 for all damage multipliers = no dmg_mult saved in JSON (uses globals).")
-
-    p:Help("Config persistence")
-    p:Help("User whitelist and blacklist are saved to data/ads/ads_config.json on the server after every change.")
-
-    p:Help("Debug")
-    p:Help("Enable Debug Prints in Armor Settings to see spawn, armor hits, zone rejections and multiplier applications in server console.")
-    p:Help("Enable Scavenger debug prints in Scavenger Settings to see weapon search, pickup and equip events.")
-end
-
 hook.Add("PopulateToolMenu","ADS_RegisterMenu",function()
     spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Armor",     "Armor Settings",         "","",BuildArmorPanel)
     spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Limbs",     "Limb HP Settings",       "","",BuildLimbsPanel)
     spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Shield",    "Energy Shield Settings", "","",BuildShieldPanel)
     spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Scavenger", "Scavenger Settings",     "","",BuildScavengerPanel)
-    spawnmenu.AddToolMenuOption("Options","Advanced Damage System","ADS_Help",      "How to use",             "","",BuildHelpPanel)
 end)

@@ -112,6 +112,7 @@ net.Receive("ads_inspect_result", function()
     -- Dump completo a consola
     print("======== ADS NPC Inspect ========")
     print("classname      : " .. tostring(info.classname))
+    print("config_key     : " .. tostring(info.config_key))
     print("is_vj          : " .. tostring(info.is_vj))
     print("vj_class       : " .. tostring(info.vj_class))
     print("is_armored     : " .. tostring(info.is_armored))

@@ -5,7 +5,7 @@
 > secciones ni historial). El historial vive en `git` + [`CHANGELOG.md`](CHANGELOG.md).
 > Si crece de una pantalla, está mal redactado: recortar.
 
-**Última actualización:** 2026-07-07
+**Última actualización:** 2026-07-08
 
 ---
 
@@ -67,6 +67,19 @@ Fase 1 completa. Todo el pipeline de blindaje zonal está en el árbol (commit i
   Shield con `DColorMixer`, flags en tab Weapons, página Q, inspect del toolgun).
   Diseño: `ADS_EnergyShields_Arquitectura.md`; tramo `[7]` del roadmap materializado;
   créditos en README (Speedy Von Gofast, sora1d).
+
+- **Identidad por spawnmenu (`ADS.GetConfigKey`):** el sandbox taggea `ent.NPCName`
+  con la key de `list.Get("NPC")` → si esa key tiene config (wl/bl/armor), manda sobre
+  el classname. Cubre NPCs de addon con clase genérica (`npc_citizen` + modelo custom)
+  y ZBase. Helpers `GetOverrideForEnt`/`IsUserBlacklisted` consumidos por core, armor,
+  limbs, shields y scavenger. Entries se **reemplazan**, nunca se mezclan.
+- **Browser — filtro por base:** combobox "Base:" (ALL/HL2/GMOD/VJ/DRG/ZBase) junto al
+  de categorías; `DetectBase` clasifica el catálogo client-side (HL2 = `Author VALVe`);
+  el combo de categorías solo muestra las de la base activa (`RepopulateCategories`).
+- **Scavenger — crouch fallback:** modelos sin anim de pickup (sets combine/metrocop)
+  se agachan (`ACT_COVER_LOW`, VJ vía `PlayAnim` lock fijo / nativos vía
+  `ResetSequence`) en vez de equipar instantáneo. Convars
+  `ads_scavenger_crouch_fallback` / `ads_scavenger_crouch_time`.
 
 ## Pendiente de verificar en juego
 

@@ -56,6 +56,72 @@ tab Weapons + fallback inline `inline_arc9`. Detalle: arquitectura §18.
 
 ---
 
+## PARCHES DE sesión Scavenger crouch + filtro por base + identidad por spawnmenu — 2026-07-08
+
+Sesión de diseño con tres frentes: (a) fallback de agacharse en el pickup del scavenger
+para modelos sin animación de pickup (sets combine/metrocop, VJ y nativos); (b) filtro
+por base de NPCs (ALL/HL2/GMOD/VJ/DRG/ZBase) en la lista del browser; (c) identidad por
+key de spawnmenu — el sandbox taggea `ent.NPCName = <key de list.Get("NPC")>`
+(`commands.lua:557`, preservado por duplicator; ZBase ídem), lo que permite configurar
+NPCs de addon que spawnean con classname genérico (`npc_citizen`/`npc_combine_s` +
+modelo custom). Precedencia: key con config > classname; entries se reemplazan, nunca
+se mezclan.
+
+- PARCHE 1 — Crouch fallback del scavenger (`ads_scavenger.lua`): convars
+  `ads_scavenger_crouch_fallback` (default 1) y `ads_scavenger_crouch_time` (default
+  1.2 s, clamp 0.3–3.0); `TryCrouchFallback` — rama VJ vía `VJ_ACT_PLAYACTIVITY` con
+  `lockAnimTime` numérico fijo (las anims de cover/crouch son loop; `ACT_COVER_LOW` se
+  traduce por set dentro de PlayAnim), rama nativa vía `SelectWeightedSequence`
+  (`ACT_COVER_LOW`/`ACT_COVER_SMG1_LOW`/`ACT_CROUCHIDLE`) + `SCHED_IDLE_STAND`; los dos
+  `return 0` de `TryPickupAnimation` ahora caen al fallback. **[APLICADO 2026-07-08]** —
+  verificado en juego: VJ con set de animación combine hace la animación de COVER para
+  tomar el arma.
+
+- PARCHE 2 — Bugfix latente `BuildCatalog` rama `VJ.NPC_Spawner_Addons`
+  (`cl_ads_browser.lua`): `ResolveIconPath(class, data)` usaba variables inexistentes
+  del loop (`entry`) → `ResolveIconPath(entry.Class, entry)`. **[APLICADO 2026-07-08]** —
+  verificado en juego.
+
+- PARCHE 3 — Filtro por base en la lista de NPCs (`cl_ads_browser.lua`, client-only):
+  `DetectBase(class, data, vjList, drgList)` clasifica cada entrada del catálogo
+  (orden: ZBase por `ZBaseNPCs`/`ZBaseCategory` ANTES que scripted_ents → DRG por
+  `DrGBaseNextbots`/`IsBasedOn drgbase_nextbot` → VJ por flag `IsVJBaseSNPC` del SENT
+  o `VJBASE_SPAWNABLE_NPC` → HL2 por `Author == "VALVe"` → GMOD resto); campo
+  `Filter.base`, chequeo primero en `RowMatchesFilter`; combobox "Base:" junto al de
+  categorías; `RepopulateCategories()` factoriza el poblado del catCombo y lo hace
+  base-aware (reemplaza el bloque inline de `Open()` y el add manual del receiver de
+  scan-world). **[APLICADO 2026-07-08]** — verificado en juego con VJ/DRG/ZBase montadas.
+
+- PARCHE 4 — Identidad por spawnmenu, núcleo (`ads_core.lua` + stool): helpers
+  `ADS.GetConfigKey(ent)` (NPCName si esa key tiene config real, si no classname),
+  `ADS.GetOverrideForEnt(ent)` (entry de key > entry de class, sin mezclar) y
+  `ADS.IsUserBlacklisted(ent)`; `IsArmored`/`GetArmorReason` con chequeo en capas
+  (key primero, luego classname; hardcoded/patrones VJ/autodetect intactos sobre el
+  classname); `ApplyDamageMultiplier` e `InspectNPC` (campo nuevo `config_key`,
+  impreso por el stool) vía `GetOverrideForEnt`; re-init vivo de `ads_save_armor`/
+  `ads_save_armor_batch` y fallback live de `ads_request_armor` matchean también
+  `NPCName`; `_dbgPass` acepta `ads_debug_filter <key>`. Contratos de red intactos
+  (`GetClassStatus`/`GetOverride` siguen por string). **[APLICADO 2026-07-08]** —
+  verificado en juego.
+
+- PARCHE 5 — Identidad por spawnmenu, subsistemas: `InitArmorNWvars`
+  (`ads_armor.lua`) resuelve perfil por `GetConfigKey` con fallback al classname
+  (lectura pura, contrato intacto); `InitLimbs`/`ProcessLimbHit` (`ads_limbs.lua`) e
+  `InitShield` (`ads_shields.lua`) vía `GetOverrideForEnt`; `RefreshShieldsForClass`
+  matchea classname o `NPCName`; `RegisterNPC` del scavenger usa `IsUserBlacklisted`.
+  **[APLICADO 2026-07-08]** — verificado en juego; ZBase cubierto gratis (clase de
+  motor + `NPCName = key zb_*`).
+
+- PARCHE 6 — Textos de la tab Energy Shield a inglés (`cl_ads_browser.lua`,
+  `BuildShieldTab`): el label informativo, el checkbox "Can regenerate" y el botón
+  "Reset Shield Template" quedaban en español; pasados a inglés (convención de UI del
+  mod). Solo strings de UI, sin cambio de lógica. **[APLICADO 2026-07-08]**
+
+- PARCHE 7 — Eliminar el panel "How to use" (`cl_ads.lua`): quitados `BuildHelpPanel`
+  y su `spawnmenu.AddToolMenuOption("ADS_Help", ...)` del menú Q. **[APLICADO 2026-07-08]**
+
+---
+
 ## PARCHES DE sesión Energy Shields — Bloque C: UI completa — 2026-07-07
 
 Sesión de diseño: capa de configuración de Energy Shields en todas las superficies de

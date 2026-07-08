@@ -52,7 +52,9 @@ local function _dbgPass(npc)
         if IsValid(picked) then return npc == picked end
     end
     local f = DBG_FILTER:GetString()
-    return f == "" or npc:GetClass() == f
+    -- Matchea classname o key de spawnmenu (ads_debug_filter <key> funciona
+    -- para NPCs de addon que spawnean con clase genérica)
+    return f == "" or npc:GetClass() == f or npc.NPCName == f
 end
 
 -- ads_debug_pick: aim at an NPC and run to pin the trace filter to it.
@@ -246,9 +248,15 @@ function ADS.IsArmored(ent)
     if ent:IsPlayer() then return EN_PLY:GetBool() end
     if not ent:IsNPC() then return false end
     if not EN_NPC:GetBool() then return false end
+    -- Identidad: key de spawnmenu (si tiene config) > classname del motor
+    local key=ADS.GetConfigKey(ent)
     local c=ent:GetClass()
-    if ADS.UserBlacklist[c] then return false end
-    if ADS.UserWhitelist[c] then return true end
+    if ADS.UserBlacklist[key] then return false end
+    if ADS.UserWhitelist[key] then return true end
+    if key~=c then
+        if ADS.UserBlacklist[c] then return false end
+        if ADS.UserWhitelist[c] then return true end
+    end
     if ADS.HARDCODED_BLACKLIST[c] then return false end
     if ADS.HARDCODED_WHITELIST[c] then return true end
     for _,p in ipairs(ADS.VJ_CLASSNAME_PATTERNS) do
@@ -268,7 +276,14 @@ function ADS.GetArmorReason(ent)
     if ent:IsPlayer() then return EN_PLY:GetBool() and "Player" or "Player disabled" end
     if not ent:IsNPC() then return "Not NPC" end
     if not EN_NPC:GetBool() then return "NPC system disabled" end
+    -- Espejo del chequeo en capas de IsArmored; si decide la key de
+    -- spawnmenu (≠ classname), el reason la delata
+    local key=ADS.GetConfigKey(ent)
     local c=ent:GetClass()
+    if key~=c then
+        if ADS.UserBlacklist[key] then return "Blacklisted (user: "..key..")" end
+        if ADS.UserWhitelist[key] then return "Whitelisted (user: "..key..")" end
+    end
     if ADS.UserBlacklist[c] then return "Blacklisted (user)" end
     if ADS.UserWhitelist[c] then return "Whitelisted (user)" end
     if ADS.HARDCODED_BLACKLIST[c] then return "Hardcoded blacklist" end
@@ -313,6 +328,54 @@ function ADS.GetOverride(class)
     local o=ADS.UserWhitelist[class]
     if type(o)=="table" and next(o)~=nil then return o end
     return nil
+end
+
+-- ── Identidad por spawnmenu ──────────────────────────────────────────────────
+-- El sandbox taggea la entidad con la key del spawnmenu (ent.NPCName =
+-- commands.lua:557, preservada por el duplicator) y ZBase hace lo propio. Si
+-- esa key tiene config de usuario (whitelist/blacklist/perfil de armadura),
+-- manda sobre el classname del motor — cubre addons de playermodel-NPC que
+-- spawnean como npc_citizen/npc_combine_s genéricos. NPCs spawneados por
+-- código no traen NPCName → classname (comportamiento idéntico al previo).
+-- Los entries NUNCA se mezclan: la key específica reemplaza al genérico.
+function ADS.GetConfigKey(ent)
+    if not IsValid(ent) then return "" end
+    local c = ent:GetClass()
+    local n = ent.NPCName
+    if isstring(n) and n ~= "" and n ~= c then
+        if ADS.UserWhitelist[n] ~= nil or ADS.UserBlacklist[n]
+           or (ADS.ArmorProfiles and ADS.ArmorProfiles[n] ~= nil) then
+            return n
+        end
+    end
+    return c
+end
+
+-- Override efectivo para una ENTIDAD: entry de la key específica si existe;
+-- si no, entry del classname (sin mezclar campos entre ambos).
+function ADS.GetOverrideForEnt(ent)
+    if not IsValid(ent) then return nil end
+    local key = ADS.GetConfigKey(ent)
+    local o = ADS.GetOverride(key)
+    if o then return o end
+    local c = ent:GetClass()
+    if key ~= c then return ADS.GetOverride(c) end
+    return nil
+end
+
+-- Blacklist de usuario efectiva por entidad. Precedencia: key específica >
+-- classname; una key whitelisteada explícitamente anula el blacklist genérico
+-- de su clase.
+function ADS.IsUserBlacklisted(ent)
+    if not IsValid(ent) then return false end
+    local key = ADS.GetConfigKey(ent)
+    if ADS.UserBlacklist[key] then return true end
+    local c = ent:GetClass()
+    if key ~= c then
+        if ADS.UserWhitelist[key] ~= nil then return false end
+        return ADS.UserBlacklist[c] == true
+    end
+    return false
 end
 
 -- Consulta mult de zona: override > convar global > 1.0
@@ -462,8 +525,10 @@ function ADS.InspectNPC(ent)
     if not IsValid(ent) then return nil end
     local i={classname=ent:GetClass(),is_vj=ent.IsVJBaseSNPC==true,vj_class=nil,
              armor=(ent:IsPlayer() and ent:Armor() or 0),is_armored=ADS.IsArmored(ent),reason=ADS.GetArmorReason(ent),
-             override=ADS.GetOverride(ent:GetClass()),
-             is_whitelisted=ADS.UserWhitelist[ent:GetClass()]~=nil}
+             override=ADS.GetOverrideForEnt(ent),
+             config_key=ADS.GetConfigKey(ent),
+             is_whitelisted=ADS.UserWhitelist[ADS.GetConfigKey(ent)]~=nil
+                            or ADS.UserWhitelist[ent:GetClass()]~=nil}
     if i.is_vj then
         local v=ent.VJ_NPC_Class
         if type(v)=="table" then i.vj_class=table.concat(v,", ")
@@ -579,7 +644,7 @@ local function ApplyDamageMultiplier(victim,hitgroup,dmginfo)
     if bit.band(dt,64)~=0 then return end
     if bit.band(dt,1)~=0  then return end
 
-    local override=ADS.GetOverride(victim:GetClass())
+    local override=ADS.GetOverrideForEnt(victim)
     local mult
     if hitgroup==HITGROUP_HEAD then
         mult=GetZoneMult(override,"head",LM_H)
@@ -1138,8 +1203,12 @@ net.Receive("ads_request_armor", function(_, ply)
     -- blindada (aplicada por toolgun, init previa, o perfil no persistido). Así el copy
     -- del browser refleja lo que el NPC tiene puesto, sin exigir un whitelist previo.
     if (not profile or not next(profile)) and ADS.ReadArmorNWvars then
-        for _, e in ipairs(ents.FindByClass(classname)) do
-            if IsValid(e) and e:IsNPC() and e:GetNWBool("ADS_Armor_Init", false) then
+        -- FindByClass no encuentra keys de spawnmenu: recorrer matcheando
+        -- classname O NPCName (NPCs de addon con clase genérica)
+        for _, e in ipairs(ents.GetAll()) do
+            if IsValid(e) and e:IsNPC()
+               and (e:GetClass() == classname or e.NPCName == classname)
+               and e:GetNWBool("ADS_Armor_Init", false) then
                 local live = ADS.ReadArmorNWvars(e)
                 if next(live) then profile = live src = "live" break end
             end
@@ -1166,9 +1235,10 @@ net.Receive("ads_save_armor", function(_, ply)
     ADS.ArmorProfiles[classname] = clean  -- nil borra el perfil de la clase
     ADS.SaveConfig()
 
-    -- Re-init NWvars en instancias vivas de esa clase
+    -- Re-init NWvars en instancias vivas de esa clase (o de esa key de spawnmenu)
     for _, ent in ipairs(ents.GetAll()) do
-        if IsValid(ent) and ent:IsNPC() and ent:GetClass() == classname then
+        if IsValid(ent) and ent:IsNPC()
+           and (ent:GetClass() == classname or ent.NPCName == classname) then
             ADS.InitArmorNWvars(ent)
         end
     end
@@ -1196,11 +1266,12 @@ net.Receive("ads_save_armor_batch", function(_, ply)
     end
     ADS.SaveConfig()
 
-    -- Re-init NWvars en instancias vivas de las clases modificadas
+    -- Re-init NWvars en instancias vivas de las clases (o keys) modificadas
     local classSet = {}
     for _, classname in ipairs(classes) do classSet[classname] = true end
     for _, ent in ipairs(ents.GetAll()) do
-        if IsValid(ent) and ent:IsNPC() and classSet[ent:GetClass()] then
+        if IsValid(ent) and ent:IsNPC()
+           and (classSet[ent:GetClass()] or (isstring(ent.NPCName) and classSet[ent.NPCName])) then
             ADS.InitArmorNWvars(ent)
         end
     end
