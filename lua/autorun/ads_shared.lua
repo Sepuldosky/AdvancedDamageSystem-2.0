@@ -17,3 +17,25 @@ game.AddDecal("ADS_Ricochet", {
     "decals/metal/shot4_subrect",
     "decals/metal/shot5_subrect",
 })
+
+-- Partículas del escudo de energía (Energy Shields), rescatadas de "Halo Energy
+-- Shield" de Speedy Von Gofast — créditos en README. Los nombres de sistema
+-- (spdy_*) y las rutas de materiales están HORNEADOS dentro de los .pcf, por eso
+-- los archivos conservan sus nombres/rutas originales. El set colorable
+-- (spdy_halo_3_custom_*) existía en el mod pero nunca se usó: ADS lo intenta
+-- para shield_color custom (control point 1), con fallback al set del tipo.
+game.AddParticles("particles/speedy_energy_shield_pfx.pcf")
+game.AddParticles("particles/speedy_energy_shield_colorable_pfx.pcf")
+
+PrecacheParticleSystem("spdy_halo_3_spartan_shield_impact_effect")
+PrecacheParticleSystem("spdy_halo_3_spartan_shield_deplete")
+PrecacheParticleSystem("spdy_halo_3_spartan_shield_deplete_arcs")
+PrecacheParticleSystem("spdy_halo_3_spartan_shield_recharge")
+PrecacheParticleSystem("spdy_halo_3_elite_shield_impact_effect")
+PrecacheParticleSystem("spdy_halo_3_elite_shield_deplete")
+PrecacheParticleSystem("spdy_halo_3_elite_shield_deplete_arcs")
+PrecacheParticleSystem("spdy_halo_3_elite_shield_recharge")
+PrecacheParticleSystem("spdy_halo_3_custom_shield_impact_effect")
+PrecacheParticleSystem("spdy_halo_3_custom_shield_deplete")
+PrecacheParticleSystem("spdy_halo_3_custom_shield_deplete_arcs")
+PrecacheParticleSystem("spdy_halo_3_custom_shield_recharge")

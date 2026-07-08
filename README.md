@@ -13,6 +13,7 @@ Sistema de blindaje zonal estilo **Escape from Tarkov** para NPCs y jugadores en
 - La bala pierde `penleft` al perforar (ARC9/TFA).
 - **Materiales configurables** (aramid, titanium, ceramic, y perfiles sci-fi como nano-titanium o uranium-matrix).
 - **Subsistema de HP por extremidad** (head/arms/legs) con debuffs, stun y drop de arma.
+- **Escudos de energía** por NPC (spartan / elite / hev): pool global recargable delante de la armadura zonal, con bypass melee, flags de arma plasma/EMP y efectos estilo Halo.
 - **Scavenger**: los NPCs recogen armas del suelo.
 - **Browser visual de configuración** ("ADS Configuration") con 4 pestañas.
 
@@ -96,7 +97,7 @@ docs/                     Arquitectura y convenciones de commits
 
 ## Documentación
 
-- [`docs/ADS_2_0_Architecture_updated.md`](docs/ADS_2_0_Architecture_updated.md) — arquitectura autocontenida (§1–§18).
+- [`docs/ADS_2_0_Architecture_updated.md`](docs/ADS_2_0_Architecture_updated.md) — arquitectura autocontenida (§1–§19).
 - [`docs/ads_convenciones_commits.txt`](docs/ads_convenciones_commits.txt) — convenciones de git commits del proyecto.
 - [`CLAUDE.md`](CLAUDE.md) — guía para asistencia con Claude Code.
 
@@ -104,3 +105,10 @@ docs/                     Arquitectura y convenciones de commits
 
 - Garry's Mod (servidor o singleplayer).
 - Opcional: **ARC9** (para datos EFT en vivo), **VJ Base**, **TFA Base**. ADS degrada con gracia si no están.
+
+## Créditos
+
+La funcionalidad de **Energy Shields** reutiliza concepto, efectos y sonidos de dos mods deprecados (2022), con permiso de sus autores. El wiring de red se reescribió (los originales eran single-target sobre la armadura HL2 del jugador; ADS es multi-NPC):
+
+- **Speedy Von Gofast** — *Halo Energy Shield*: burbuja de energía, partículas (`spdy_*`) y sonidos de hit/colapso/recarga.
+- **sora1d** — *Goofy Armor Effect*: base del **HEV Charge Shield** (efectos y sonidos built-in del engine).
