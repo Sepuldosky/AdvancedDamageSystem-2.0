@@ -17,7 +17,7 @@ Sistema de blindaje zonal estilo **Escape from Tarkov** para NPCs y jugadores en
 - **Subsistema de HP por extremidad** (head/arms/legs) con debuffs, stun y drop de arma.
 - **Escudos de energía** por NPC (spartan / elite / hev): pool global recargable delante de la armadura zonal, con bypass melee, flags de arma plasma/EMP y efectos estilo Halo.
 - **Scavenger**: los NPCs recogen armas del suelo.
-- **Browser visual de configuración** ("ADS Configuration") con 4 pestañas.
+- **Browser visual de configuración** ("ADS Configuration") con 6 pestañas.
 
 ## Compatibilidad de bases de armas
 
@@ -50,11 +50,13 @@ ads_config_ui
 - **Armor** — perfiles de armadura por zona sobre una silueta clickeable.
 - **Limbs / WL** — whitelist/blacklist de NPCs y tuning de HP por extremidad.
 - **Weapons** — penetración curada por arma + ajuste de los 6 buckets de ammo fallback.
+- **Energy Shield** — tipo, color, HP y recarga del escudo por NPC.
+- **Scavenger** — overrides de peso de recogida por classname.
 - **General** — catálogo, refresh y scan de NPCs del mundo.
 
 ### Menú Q (spawnmenu)
 
-`Options → Advanced Damage System`: Armor Settings, Limb HP Settings, Scavenger Settings, How to use.
+`Options → Advanced Damage System`: Armor Settings, Limb HP Settings, Energy Shield Settings, Scavenger Settings.
 
 ### Toolgun
 
@@ -83,14 +85,17 @@ Stool **ADS Config** (debug puro, efímero, sin tocar el JSON):
 ```
 lua/
   autorun/
+    ads_shared.lua        Registro compartido (decals, partículas del escudo)
     server/
       ads_core.lua        Núcleo: ScaleNPCDamage, whitelist/blacklist, JSON, net, compat ARC9
       ads_armor.lua       Extractor + Resolver puros, materiales, ammo fallback, curated weapons
       ads_limbs.lua       HP por extremidad
       ads_scavenger.lua   Recogida de armas por NPCs
+      ads_shields.lua     Escudos de energía: motor mecánico, pool global, recarga
     client/
       cl_ads.lua          Paneles del menú Q
-      cl_ads_browser.lua  Browser "ADS Configuration" (4 tabs)
+      cl_ads_browser.lua  Browser "ADS Configuration" (6 tabs)
+      cl_ads_shields.lua  Efectos visuales del escudo: burbuja, partículas, FX
   weapons/gmod_tool/stools/
       ads_config.lua      Stool de debug
 materials/ads/            Iconos de materiales de placa
